@@ -869,7 +869,7 @@ class AutoexportServerTests(unittest.TestCase):
         env = dict(os.environ)
         env.pop("QATENA_DB", None)
         env["PYTHONPATH"] = REPO_ROOT
-        env["QATENA_ARMORIES"] = self._armories
+        env["QATENA_ARMORY"] = self._armories
         env["QATENA_EXPORT_SYNC"] = "1"  # test seam: deterministic inline export
         env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen(

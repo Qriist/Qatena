@@ -37,7 +37,7 @@ A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a 
 
 One server process, many armories: each project gets its own Qatena database file. The 18th verb,
 `vambrace` (`action: "equip"`), mints a UUIDv7, instantiates `<key>.db` in the armory dir
-(env `QATENA_ARMORIES`, default `./.qatena`), bootstraps its schema, and returns that UUIDv7 as
+(env `QATENA_ARMORY`, default `./.qatena`), bootstraps its schema, and returns that UUIDv7 as
 the armory's **routing key** — every other verb call carries that key in a required `vambrace`
 argument, and the server routes the call to the right file.
 

@@ -1,9 +1,9 @@
 """stdio MCP smoke tests (SPEC 1.9, 3): spawn `python -m qatena` with a temp
-QATENA_ARMORIES dir, drive newline-delimited JSON-RPC over stdio.
+QATENA_ARMORY dir, drive newline-delimited JSON-RPC over stdio.
 
 Every readline carries a thread-based deadline so a hung server fails the test
 instead of hanging the suite. QATENA_DB is retired (SPEC 1.9) and is explicitly
-popped from the spawn env; routing is QATENA_ARMORIES + the vambrace key.
+popped from the spawn env; routing is QATENA_ARMORY + the vambrace key.
 """
 import json
 import os
@@ -53,16 +53,16 @@ class ServerSmoke(unittest.TestCase):
     # -- spawn ---------------------------------------------------------------
     def _env(self):
         env = dict(os.environ)
-        env.pop("QATENA_DB", None)  # retired: routing is QATENA_ARMORIES + keys
+        env.pop("QATENA_DB", None)  # retired: routing is QATENA_ARMORY + keys
         env["PYTHONPATH"] = REPO_ROOT
-        env["QATENA_ARMORIES"] = self._armories
+        env["QATENA_ARMORY"] = self._armories
         env["PYTHONIOENCODING"] = "utf-8"
         return env
 
     def _spawn(self):
         """Spawn a server against the shared temp armories dir and rebind the
         transport state (self.proc / self._lines) to it, so tests that kill
-        the server can respawn with the same QATENA_ARMORIES."""
+        the server can respawn with the same QATENA_ARMORY."""
         proc = subprocess.Popen(
             [sys.executable, "-m", "qatena"],
             cwd=REPO_ROOT, env=self._env(),
@@ -323,7 +323,7 @@ class ServerSmoke(unittest.TestCase):
         cid = json.loads(r["content"][0]["text"])["id"]
 
         # kill the first server; routing state is the armory files themselves,
-        # so a respawned server with the same QATENA_ARMORIES routes the same key
+        # so a respawned server with the same QATENA_ARMORY routes the same key
         self.proc.kill()
         self.proc.wait(timeout=self.DEADLINE)
         self._spawn()  # rebind self.proc / self._lines to the respawn

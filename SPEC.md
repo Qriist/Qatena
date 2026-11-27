@@ -100,7 +100,7 @@ part of v1 (see §5).
 ### 1.9 Vambrace routing (multi-armory)
 
 - Every entity lives in an **armory** — one Qatena database file. The armory dir comes from the
-  `QATENA_ARMORIES` environment variable (default `./.qatena`); the server creates it at startup.
+  `QATENA_ARMORY` environment variable (default `./.qatena`); the server creates it at startup.
   An armory file is `<armory_dir>/<key>.db`.
 - An armory is created only by the `vambrace` verb, `action: "equip"` (§3.18): it mints a UUIDv7,
   instantiates `<key>.db`, bootstraps its schema, and returns exactly
@@ -114,7 +114,7 @@ part of v1 (see §5).
 - Routing state is the files themselves — a scan / existence check in the armory dir. No in-memory
   registry: routing survives server restart. Each call opens a fresh connection to its armory.
 - `QATENA_DB` (the old single-database env var, default `./.qatena/qatena.db`) is **retired** —
-  replaced by `QATENA_ARMORIES`.
+  replaced by `QATENA_ARMORY`.
 
 ## 2. DDL
 

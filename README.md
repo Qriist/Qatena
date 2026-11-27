@@ -26,7 +26,7 @@ one logical operation per call — with every invariant enforced server-side. Ev
 python -m qatena
 ```
 
-The armory dir comes from the `QATENA_ARMORIES` environment variable (default `./.qatena`);
+The armory dir comes from the `QATENA_ARMORY` environment variable (default `./.qatena`);
 the directory is auto-created at start, and each armory is a file `<key>.db` inside it,
 created by the `vambrace` verb. The server speaks newline-delimited JSON-RPC 2.0 (MCP) on stdin/stdout until
 stdin closes; all diagnostics go to stderr, never stdout.
@@ -54,7 +54,7 @@ extensions:
     enabled: true
     envs:
       PYTHONPATH: "F:/Projects/Qatena"
-      QATENA_ARMORIES: "F:/Projects/Qatena/.qatena"
+      QATENA_ARMORY: "F:/Projects/Qatena/.qatena"
     type: stdio
     timeout: 300
 ```
