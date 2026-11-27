@@ -31,7 +31,7 @@ Themed after a chain weapon system in the project that prompted this design. The
 
 ## Interface layer
 
-A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls.
+A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls. Where an entity's operations naturally form a set, they consolidate into **one verb with an `action` parameter** rather than separate verbs — armory control does this today (`vambrace`), and the planned `open_item` write surface will do the same (SPEC §open_items).
 
 ## Multi-vambrace routing
 
