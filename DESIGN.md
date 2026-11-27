@@ -15,7 +15,7 @@ Build **durable, itemizable, addressable, and malleable** note storage:
 
 | Term | Meaning |
 |---|---|
-| **intention** | a category; the view layer of the note space (membership is chain-only) |
+| **intention** | a category; the view layer of the note space. Many-to-many: a chain can belong to **any number of intentions** (including zero), and an intention can contain any number of chains - overlapping is the design. Membership is chain-only |
 | **chain** | the unit of note (the source system's "pin") — a header plus ordered blades plus intention membership |
 | **blade** | an individually addressable unit of a chain's body (the source system's "bullet") |
 | **reblade** | a typed, UUID-addressed link between entities |
@@ -105,7 +105,7 @@ cascade-deletes its registers.
 
 - `blade_order` indices are **gapless per chain**, re-established in the same transaction as any blade insert/delete/move.
 - `reblades` endpoints are any UUID in the tracked-entity space (chains, blades, intentions, open items, rulings, terms); endpoint *type* is implicit in the UUID, never stored as a column.
-- Intention membership is **chain-only** — intentions are the view layer of the note space; operational entities are not filed into intentions.
+- Intention membership is **chain-only** — intentions are the view layer of the note space; operational entities are not filed into intentions. Membership is unconstrained in degree: a chain can belong to any number of intentions (including zero), and an intention can contain any number of chains — groups are independent and overlapping by design.
 
 ### Non-core tables (creative-project tracking)
 

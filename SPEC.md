@@ -188,6 +188,8 @@ CREATE TABLE reblades (
 CREATE INDEX idx_reblades_dst ON reblades (dst_uuid);
 ```
 
+**Intentions are the view layer.** Chains and intentions are many-to-many: a chain can belong to **any number of intentions** (including zero), and an intention can contain any number of chains — overlapping membership is the design, not an exception. Membership is written only via `chain_put` / `chain_split` (the supplied set replaces exactly) and cascade-deletes with the chain. Membership is chain-only: operational entities (open items, rulings, terms) are not filed into intentions.
+
 ### Non-core (creative-project tracking)
 
 ```sql
