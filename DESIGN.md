@@ -205,7 +205,7 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 
 ## Open items
 
-- Full DDL + MCP tool schemas — implemented in `SPEC.md` (tracked, committed); the spec tracks the built 20-tool surface.
-- UUID storage → `BLOB(16)` (finalizing step).
 - `history` mechanism (field-level audit; contract reserved).
-- Agent-authored log entries (a possible 20th verb) — open.
+- Deferred `vambrace` actions: `list` / `destroy` / `label` (`equip` is the only action today; `destroy` would make armory cleanup first-class).
+- UUID storage → `BLOB(16)` (finalizing step).
+- Agent-authored log entries (a 21st-verb candidate now — the 20th went to `deflected_write` in `bcdc70c`) — open.
