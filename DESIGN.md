@@ -61,6 +61,10 @@ atomically rewrites the file — so the file is always the current truth while t
 stays fast: change identification stays in the server process, file writing in the side
 process.
 
+**One-shot export.** The `export` vambrace action renders a stack to a file immediately
+without any register machinery: read-only against the vault, no register row, no log, no
+stored signature (SPEC 3.18) — same render, same pointer layer, no bookkeeping.
+
 **Why signature-diff** (rather than extending the per-write transaction footprint): the
 footprint would need every write handler to record every structurally-relevant UUID —
 membership changes, blade re-parenting, membership unions in merges — fragile by
@@ -134,10 +138,12 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 **Vault**
 - `vambrace` — `action: "create"` mints a UUIDv7 and instantiates an empty vault; the returned
   UUIDv7 is the routing key required on every other verb (multi-vault routing, above).
-  `action: "register_autoexport"` / `"deregister_autoexport"` are key-bearing vault actions:
-  register a stack (section/chain/blade root) for automatic sig-gated export to a file
-  (Autoexport, above; optional `pointer_fidelity` selects the pointer layer carried, default
-  `out`), or remove the register
+  `action: "register_autoexport"` / `"deregister_autoexport"` / `"export"` are key-bearing
+  vault actions: register a stack (section/chain/blade root) for automatic sig-gated export
+  to a file (Autoexport, above; optional `pointer_fidelity` selects the pointer layer
+  carried, default `out`), remove the register, or run a one-shot `export` — immediate
+  file write, read-only against the vault (no register row, no log, no stored signature;
+  Autoexport, above)
 
 **Chain writes**
 - `chain_put` — upsert by UUID or name; presence-mask fields (`name`, `sections`, …); fresh UUIDv7 if absent. Renames and refiling are just this.

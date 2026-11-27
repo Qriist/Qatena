@@ -698,7 +698,7 @@ file named `<UUIDv7>.db` in the vault dir, bootstraps its schema, and returns ex
 `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vault's routing key, the required `vambrace`
 argument of every other verb. `create` is the only key-less action.
 
-`register_autoexport` and `deregister_autoexport` are **key-bearing** actions: alongside
+`register_autoexport`, `deregister_autoexport`, and `export` are **key-bearing** actions: alongside
 `action` they take the vault's routing key as the `vambrace` argument, validated fail-closed
 exactly like a routed verb (§1.9 — `missing_vambrace` / `malformed_vambrace` /
 `unknown_vambrace`), plus the fields below. Any other action fails with `unsupported_action`.
@@ -778,6 +778,19 @@ exactly once (under its `src` owner), never duplicated into the block.
 `{root, emit_path, removed: true, log_id}`. **The exported file is left on disk** — the server
 never deletes user files.
 
+`export` (key-bearing): one-shot export — the same fields as `register_autoexport`
+(`root`, `emit_path`, `emit_format`, optional `pointer_fidelity`), executed immediately with
+**no vault mutation**: the vault opens **read-only**, and no register row, log row, `log_refs`,
+or stored signature is written. `pointer_fidelity` here is the explicit pointer layer for this
+one render (default `out`) — there is **no presence-masking**: the register row is never
+consulted. The file lands via the same atomic mechanism as the exporter child (shared
+`write_export`: temp + `os.replace`). Response:
+`{root, root_space, emit_path, emit_format, pointer_fidelity, stack: {chains, blades},
+exported: true, exported_at (iso)}` — deliberately **no `replaced`, no `log_id`** (nothing was
+registered, nothing was logged). Errors: unresolvable root → `not_found`; root space not
+stackable (section/chain/blade) → `validation_failed`; file-write failure → `export_failed`;
+sqlite → `db_error`.
+
 **Export lifecycle (convention).** Re-exports are sig-gated: the file is rewritten only when
 the stack signature actually changed. Self-healing: any failed export (disk full, path lost,
 crash) leaves `last_sig` stale, so the next changed write re-triggers automatically — no queue,
@@ -795,24 +808,25 @@ idempotently.
 ```json
 {
   "name": "vambrace",
-  "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport and deregister_autoexport are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register. See SPEC 3.18.",
+  "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live section/chain/blade stack to emit_path immediately, read-only against the vault (no register row, no log, no stored signature). See SPEC 3.18.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "action": { "type": "string", "enum": ["create", "register_autoexport", "deregister_autoexport"], "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport additionally requires 'emit_format'." },
-      "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport: the stack root — a LIVE section, chain, or blade (register); the registered root (deregister). Not used by create." },
-      "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport: destination file path, used exactly as given; the parent directory must exist. Not used by create." },
-      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport only: export format. Re-registering the same root+path with a different format replaces it. Not used by create or deregister." },
-      "pointer_fidelity": { "type": "string", "enum": ["none", "in", "out", "both"], "description": "For register_autoexport only: pointer layer of the export — 'out' rows leaving the stack, 'in' rows entering it, 'both' either, 'none' no pointer markup. Omitted = 'out' at creation; omitted on re-register keeps the stored value (presence-mask). The mode is signed into the stack signature. Not used by create or deregister." }
+      "action": { "type": "string", "enum": ["create", "register_autoexport", "deregister_autoexport", "export"], "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live section/chain/blade stack to emit_path, read-only against the vault (no register row, no log, no signature); pointer_fidelity selects the pointer layer for this render (default out)." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the vault's routing key (returned by action=create). Not used by create." },
+      "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE section, chain, or blade (register / export); the registered root (deregister). Not used by create." },
+      "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by create." },
+      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by create or deregister." },
+      "pointer_fidelity": { "type": "string", "enum": ["none", "in", "out", "both"], "description": "For register_autoexport and export only: pointer layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by create or deregister." }
     },
     "required": ["action"]
   }
 }
 ```
 
-The key-bearing actions' `vambrace` argument is the routing key itself (§1.9); it is described
-in the tool description rather than as a schema property, because `create` takes no key and the
-verb's schema stays key-less.
+The key-bearing actions' `vambrace` argument is the routing key itself (§1.9); the schema
+carries it as an optional property (UUIDv7 pattern) — `create` takes no key, so it is omitted
+there — and it is validated fail-closed exactly like every routed verb.
 
 ## 4. Migration notes (source → Qatena)
 
