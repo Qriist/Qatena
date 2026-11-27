@@ -66,6 +66,7 @@ class Edit(QatenaTestCase):
         self.assertEqual(res["blade"]["pos"], 0)
         self.assertEqual(res["blade"]["chain_id"], cid)
         self.assertIn("log_id", res)
+        self.assertEqual(res["deleted"], [])  # SPEC 1.6: both lists in the response
         self.assertEqual(self.verb("get", id=bid)["text"], "first line edited")
         self.assert_gapless(cid)
 
@@ -76,6 +77,23 @@ class Edit(QatenaTestCase):
         cid = self.verb("chain_put", name="Alpha")["id"]
         bid = insert(self, cid, "first line")["blade"]["id"]
         self.expect_error("validation_failed", "blade_edit", id=bid)
+
+    def test_edit_reconciliation_deleted_list_in_response_SPEC_1_6(self):
+        # SPEC 1.6: reconciliation returns BOTH lists — stale refs as `deleted`
+        # pointer dicts (same shape as `minted`), new refs as `minted`.
+        cid = self.verb("chain_put", name="Alpha")["id"]
+        tid = self.insert_term("anvil")
+        bid = insert(self, cid, "the anvil glows")["blade"]["id"]
+        self.assertEqual(self.pkeys(), {(bid, tid, "name-ref")})
+        res = self.verb("blade_edit", id=bid, text="the hammer glows")
+        self.assertEqual(res["deleted"],
+                         [{"src": bid, "dst": tid, "kind": "name-ref"}])
+        self.assertEqual(res["minted"], [])
+        self.assertEqual(self.pkeys(), set())
+        res = self.verb("blade_edit", id=bid, text="anvil again")
+        self.assertEqual(res["deleted"], [])
+        self.assertEqual(res["minted"],
+                         [{"src": bid, "dst": tid, "kind": "name-ref"}])
 
 
 class Move(QatenaTestCase):

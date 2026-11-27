@@ -108,3 +108,22 @@ class Sections(QatenaTestCase):
     def test_sections_only_validation_failed(self):
         self.expect_error("validation_failed", "chain_put",
                           sections=[{"name": "X"}])
+
+
+class Delete(QatenaTestCase):
+    def test_delete_cascades_header_and_blade_outgoing_pointers_SPEC_3_2(self):
+        # SPEC 3.2: outgoing pointers are cascade-deleted — the header's AND
+        # the deleted blades' (pointers hold polymorphic UUIDs; no FK cascade).
+        cid = self.verb("chain_put", name="Alpha")["id"]
+        other = self.verb("chain_put", name="Beta")["id"]
+        a = self.verb("blade_insert", chain=cid, text="first line")["blade"]["id"]
+        b = self.verb("blade_insert", chain=cid, text="second line")["blade"]["id"]
+        self.verb("pointer_add", src=a, dst=other, kind="source")   # outgoing from a blade
+        self.verb("pointer_add", src=cid, dst=b, kind="part-of")    # outgoing from header
+        tid = self.insert_term("anvil")
+        self.verb("pointer_add", src=tid, dst=cid, kind="see")      # incoming: preserved
+        res = self.verb("chain_delete", id=cid)
+        self.assertEqual(len(res["incoming"]), 1)
+        self.assertEqual(self.pkeys(), {(tid, cid, "see")})
+        ops = {u: o for _, u, o in self.ref_ops(res["log_id"])}
+        self.assertEqual(ops, {cid: "deleted", a: "deleted", b: "deleted"})

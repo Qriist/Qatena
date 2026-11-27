@@ -412,7 +412,14 @@ def _h_chain_delete(conn, args, tx):
         r["id"]
         for r in conn.execute("SELECT id FROM chain_blades WHERE chain_id = ?", (cid,))
     ]
-    conn.execute("DELETE FROM pointers WHERE src_uuid = ?", (cid,))  # outgoing
+    conn.execute("DELETE FROM pointers WHERE src_uuid = ?", (cid,))  # outgoing (header)
+    # Blades cascade-delete with the header, but pointers hold polymorphic
+    # UUIDs (no FK cascade) — remove the blades' outgoing refs too (SPEC 3.2).
+    conn.execute(
+        "DELETE FROM pointers WHERE src_uuid IN "
+        "(SELECT id FROM chain_blades WHERE chain_id = ?)",
+        (cid,),
+    )
     conn.execute("DELETE FROM chain_headers WHERE id = ?", (cid,))   # blades + map cascade
     tx.ref(cid, "deleted")
     for b in blade_ids:
@@ -595,11 +602,15 @@ def _h_blade_edit(conn, args, tx):
         )
     ]
     expected, minted, candidates = _autolink(conn, tx, bid, text)
-    deleted = [d for d in old_dsts if d not in expected]
-    for d in deleted:
+    deleted = [
+        {"src": bid, "dst": d, "kind": "name-ref"}
+        for d in old_dsts
+        if d not in expected
+    ]
+    for p in deleted:
         conn.execute(
             "DELETE FROM pointers WHERE src_uuid = ? AND dst_uuid = ? AND kind = 'name-ref'",
-            (bid, d),
+            (p["src"], p["dst"]),
         )
     conn.execute("UPDATE chain_blades SET text = ?, updated = ? WHERE id = ?", (text, tx.now, bid))
     tx.ref(bid, "modified")
@@ -616,6 +627,7 @@ def _h_blade_edit(conn, args, tx):
         {
             "blade": {"id": bid, "pos": pos, "text": text, "chain_id": cid},
             "minted": minted,
+            "deleted": deleted,
             "candidates": candidates,
         },
         f"blade_edit {bid}",
