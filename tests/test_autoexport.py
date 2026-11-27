@@ -13,6 +13,7 @@ import json
 import os
 import queue
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -54,11 +55,14 @@ class AutoexportTests(QatenaTestCase):
     def _code(self, payload):
         return payload["error"]["code"] if "error" in payload else None
 
-    def _register(self, root, emit_path, emit_format="json", with_key=True):
+    def _register(self, root, emit_path, emit_format="json", with_key=True,
+                  pointer_fidelity=None, key=None):
         args = {"action": "register_autoexport", "root": root,
                 "emit_path": emit_path, "emit_format": emit_format}
+        if pointer_fidelity is not None:
+            args["pointer_fidelity"] = pointer_fidelity
         if with_key:
-            args["vambrace"] = self._key
+            args["vambrace"] = key if key is not None else self._key
         return server._call_vambrace(self._tmp, args)
 
     def _deregister(self, root, emit_path):
@@ -200,7 +204,8 @@ class AutoexportTests(QatenaTestCase):
         cid = self._make_chain("Alpha", ("first line",))
         bid = self._blade_id(cid)
         out = os.path.join(self._tmp, "out.json")
-        p, e = self._register(cid, out)
+        # 'none': no pointer layer at all, so even a pointer write is a no-op
+        p, e = self._register(cid, out, pointer_fidelity="none")
         self.assertFalse(e, p)
         file_before = self._read(out)
         sig_before = self._register_row(cid, out)["last_sig"]
@@ -214,7 +219,7 @@ class AutoexportTests(QatenaTestCase):
             p, e = self._write("chain_put", name="Unrelated")
             self.assertFalse(e, p)
 
-        with self.subTest("pointer inside the stack (pointers are excluded)"):
+        with self.subTest("pointer inside the stack (excluded in 'none' mode)"):
             p, e = self._write("pointer_add", src=cid, dst=bid, kind="see")
             self.assertFalse(e, p)
 
@@ -376,22 +381,35 @@ class AutoexportTests(QatenaTestCase):
         bid = self._blade_id(cid)
 
         def sig():
-            return autoexport.stack_signature(autoexport.compute_stack(self.conn, cid))
+            # 'none': content-only signature, pointers excluded by mode
+            return autoexport.stack_signature(
+                autoexport.compute_stack(self.conn, cid, "none"))
 
         s1, s2 = sig(), sig()
         self.assertEqual(s1, s2)
         self.assertEqual(len(s1), 64)  # sha256 hex
 
-        self.verb("pointer_add", src=cid, dst=bid, kind="see")  # excluded
+        self.verb("pointer_add", src=cid, dst=bid, kind="see")  # excluded in 'none'
         self.assertEqual(sig(), s1)
 
         self.verb("blade_edit", id=bid, text="changed")
         self.assertNotEqual(sig(), s1)
 
+        with self.subTest("the same pointers ARE signed in 'out' mode"):
+            o1 = autoexport.stack_signature(
+                autoexport.compute_stack(self.conn, cid, "out"))
+            self.verb("pointer_add", src=cid, dst=bid, kind="supersedes")
+            o2 = autoexport.stack_signature(
+                autoexport.compute_stack(self.conn, cid, "out"))
+            self.assertNotEqual(o1, o2)
+
     # -- the exporter child, standalone -----------------------------------------------------
     def test_child_entrypoint_standalone(self):
         cid = self._make_chain("Gamma", ("a gamma line",))
         out = os.path.join(self._tmp, "child.csv")
+        p, e = self._register(cid, out, emit_format="csv")
+        self.assertFalse(e, p)
+        logs_after_register = self._export_logs()  # register log + first-export log
         env = dict(os.environ)
         env["PYTHONPATH"] = REPO_ROOT
         env.pop("QATENA_EXPORT_SYNC", None)
@@ -401,13 +419,184 @@ class AutoexportTests(QatenaTestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         body = self._read(out)
         self.assertIn("a gamma line", body)
-        self.assertTrue(body.startswith("space,uuid,name,pos,text\n"))
-        # the child's one small write tx minted exactly one log row
-        self.assertEqual(self._export_logs(), 1)
+        self.assertTrue(body.startswith(
+            "space,uuid,name,src,dst,kind,pos,text,note\n"))
+        # the child's one small write tx minted exactly one MORE log row
+        self.assertEqual(self._export_logs(), logs_after_register + 1)
+
+    def test_child_noop_without_register(self):
+        # no register row for (root, path) -> the child exits 0, writes
+        # nothing, mints no log (deregistered-in-flight contract)
+        cid = self._make_chain("Gamma", ("a gamma line",))
+        out = os.path.join(self._tmp, "nope.csv")
+        env = dict(os.environ)
+        env["PYTHONPATH"] = REPO_ROOT
+        proc = subprocess.run(
+            [sys.executable, "-m", "qatena.autoexport", self.db_path, cid, out, "csv"],
+            capture_output=True, text=True, cwd=REPO_ROOT, env=env, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertFalse(os.path.exists(out))
+        self.assertEqual(self._export_logs(), 0)
 
     def test_child_main_usage_error(self):
         self.assertEqual(autoexport.main([]), 2)
         self.assertEqual(autoexport.main(["only-one-arg"]), 2)
+
+    # -- pointer fidelity modes (SPEC 3.18) ------------------------------------
+    def test_register_fidelity_default_and_validation(self):
+        cid = self._make_chain("Alpha", ("first",))
+        out = os.path.join(self._tmp, "f.json")
+        with self.subTest("omitted -> stored default 'out'"):
+            p, e = self._register(cid, out)
+            self.assertFalse(e, p)
+            self.assertEqual(p["pointer_fidelity"], "out")
+            self.assertEqual(self._register_row(cid, out)["pointer_fidelity"], "out")
+        with self.subTest("explicit value is stored"):
+            out2 = os.path.join(self._tmp, "f2.json")
+            p, e = self._register(cid, out2, pointer_fidelity="none")
+            self.assertFalse(e, p)
+            self.assertEqual(p["pointer_fidelity"], "none")
+            self.assertEqual(self._register_row(cid, out2)["pointer_fidelity"], "none")
+        with self.subTest("invalid value -> validation_failed, nothing stored"):
+            out3 = os.path.join(self._tmp, "f3.json")
+            p, e = self._register(cid, out3, pointer_fidelity="sideways")
+            self.assertTrue(e)
+            self.assertEqual(self._code(p), "validation_failed")
+            self.assertIsNone(self._register_row(cid, out3))
+
+    def test_fidelity_modes_file_content(self):
+        inside = self._make_chain("Inside", ("i one", "i two"))
+        outside = self._make_chain("Outside", ("o one",))
+        i1 = self._blade_id(inside, "i one")
+        i2 = self._blade_id(inside, "i two")
+        o1 = self._blade_id(outside, "o one")
+        self.verb("pointer_add", src=inside, dst=o1, kind="see")
+        self.verb("pointer_add", src=o1, dst=inside, kind="source")
+        self.verb("pointer_add", src=i1, dst=i2, kind="part-of")
+
+        def rows(path):
+            doc = json.loads(self._read(path))
+            return {(r["src"], r["dst"], r["kind"]) for r in doc["pointers"]}
+
+        p, e = self._register(inside, os.path.join(self._tmp, "m-none.json"),
+                              pointer_fidelity="none")
+        self.assertFalse(e, p)
+        self.assertEqual(rows(os.path.join(self._tmp, "m-none.json")), set())
+        self._register(inside, os.path.join(self._tmp, "m-out.json"),
+                       pointer_fidelity="out")
+        self.assertEqual(rows(os.path.join(self._tmp, "m-out.json")),
+                         {(inside, o1, "see"), (i1, i2, "part-of")})
+        self._register(inside, os.path.join(self._tmp, "m-in.json"),
+                       pointer_fidelity="in")
+        self.assertEqual(rows(os.path.join(self._tmp, "m-in.json")),
+                         {(o1, inside, "source"), (i1, i2, "part-of")})
+        self._register(inside, os.path.join(self._tmp, "m-both.json"),
+                       pointer_fidelity="both")
+        self.assertEqual(rows(os.path.join(self._tmp, "m-both.json")),
+                         {(inside, o1, "see"), (o1, inside, "source"),
+                          (i1, i2, "part-of")})
+        with self.subTest("md: Inbound block only in in/both modes"):
+            self._register(inside, os.path.join(self._tmp, "m-in.md"),
+                           emit_format="md", pointer_fidelity="in")
+            body = self._read(os.path.join(self._tmp, "m-in.md"))
+            self.assertIn("## Inbound", body)
+            self.assertIn("- %s [source] -> %s" % (o1, inside), body)
+            self._register(inside, os.path.join(self._tmp, "m-out.md"),
+                           emit_format="md", pointer_fidelity="out")
+            body = self._read(os.path.join(self._tmp, "m-out.md"))
+            self.assertNotIn("## Inbound", body)
+            self.assertIn("<!-- see -> %s -->" % o1, body)
+            self.assertIn("<!-- part-of -> %s -->" % i2, body)
+
+    def test_fidelity_trigger_matrix(self):
+        inside = self._make_chain("Inside", ("i one",))
+        outside = self._make_chain("Outside", ("o one",))
+        o1 = self._blade_id(outside, "o one")
+
+        def fresh(mode, tag):
+            out = os.path.join(self._tmp, "t-%s-%s.json" % (mode, tag))
+            p, e = self._register(inside, out, pointer_fidelity=mode)
+            self.assertFalse(e, p)
+            return out
+
+        with self.subTest("none: pointer write touching E does not re-export"):
+            out = fresh("none", "a")
+            before = self._read(out)
+            self._write("pointer_add", src=inside, dst=o1, kind="see")
+            self.assertEqual(self._read(out), before)
+        with self.subTest("out: own outbound pointer write re-exports"):
+            out = fresh("out", "b")
+            before = self._read(out)
+            self._write("pointer_add", src=inside, dst=o1, kind="supersedes")
+            self.assertNotEqual(self._read(out), before)
+        with self.subTest("out: external inbound pointer write does not re-export"):
+            out = fresh("out", "c")
+            before = self._read(out)
+            self._write("pointer_add", src=o1, dst=inside, kind="source")
+            self.assertEqual(self._read(out), before)
+        with self.subTest("in: external inbound pointer write re-exports"):
+            out = fresh("in", "d")
+            before = self._read(out)
+            self._write("pointer_add", src=o1, dst=inside, kind="part-of")
+            self.assertNotEqual(self._read(out), before)
+        with self.subTest("both: either direction re-exports"):
+            out = fresh("both", "e")
+            before = self._read(out)
+            self._write("pointer_add", src=o1, dst=inside, kind="see")
+            self.assertNotEqual(self._read(out), before)
+
+    def test_reregister_mode_change_reexports(self):
+        inside = self._make_chain("Inside", ("i one",))
+        outside = self._make_chain("Outside", ("o one",))
+        o1 = self._blade_id(outside, "o one")
+        self.verb("pointer_add", src=inside, dst=o1, kind="see")
+        out = os.path.join(self._tmp, "mode.json")
+        p, e = self._register(inside, out, pointer_fidelity="none")
+        self.assertFalse(e, p)
+        self.assertFalse(p["replaced"])
+        self.assertEqual(json.loads(self._read(out))["pointers"], [])
+        sig_none = self._register_row(inside, out)["last_sig"]
+        with self.subTest("mode change is a replacement and re-exports"):
+            p, e = self._register(inside, out, pointer_fidelity="out")
+            self.assertFalse(e, p)
+            self.assertTrue(p["replaced"])
+            doc = json.loads(self._read(out))
+            self.assertEqual(len(doc["pointers"]), 1)
+            self.assertNotEqual(self._register_row(inside, out)["last_sig"], sig_none)
+        with self.subTest("omitted on re-register keeps the stored value"):
+            p, e = self._register(inside, out)
+            self.assertFalse(e, p)
+            self.assertFalse(p["replaced"])
+            self.assertEqual(p["pointer_fidelity"], "out")
+            self.assertEqual(self._register_row(inside, out)["pointer_fidelity"], "out")
+
+    def test_bootstrap_migration_adds_pointer_fidelity(self):
+        p = os.path.join(self._tmp, "legacy.db")
+        conn = sqlite3.connect(p)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            "CREATE TABLE autoexport_registers ("
+            "root_uuid TEXT(36) NOT NULL, emit_path TEXT NOT NULL, "
+            "emit_format TEXT NOT NULL, last_sig TEXT, last_emitted INTEGER, "
+            "created INTEGER NOT NULL, PRIMARY KEY (root_uuid, emit_path))")
+        conn.execute(
+            "INSERT INTO autoexport_registers (root_uuid, emit_path, "
+            "emit_format, created) VALUES (?, ?, ?, ?)",
+            ("0192f6a0-0000-7000-8000-000000000000", "/x/y.md", "md", 1))
+        conn.commit()
+        schema.bootstrap(conn)  # migrates in place, idempotently
+        cols = {r["name"] for r in conn.execute(
+            "PRAGMA table_info(autoexport_registers)")}
+        self.assertIn("pointer_fidelity", cols)
+        row = conn.execute(
+            "SELECT pointer_fidelity FROM autoexport_registers").fetchone()
+        self.assertEqual(row["pointer_fidelity"], "out")  # default backfilled
+        schema.bootstrap(conn)  # second run: no error, no duplicate column
+        n = conn.execute(
+            "SELECT COUNT(*) c FROM pragma_table_info('autoexport_registers') "
+            "WHERE name = 'pointer_fidelity'").fetchone()["c"]
+        self.assertEqual(n, 1)
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +610,8 @@ SNAP_UUIDS = {
     "a1": "0192f6a0-0000-7abc-8def-000000000004",
     "a2": "0192f6a0-0000-7abc-8def-000000000005",
     "b1": "0192f6a0-0000-7abc-8def-000000000006",
+    "ext1": "0192f6a0-0000-7abc-8def-000000000007",
+    "ext2": "0192f6a0-0000-7abc-8def-000000000008",
 }
 SNAP_ISO = "2026-11-27T10:00:00.000Z"
 
@@ -440,7 +631,14 @@ def _snap_payloads():
             ],
             "blades": [],
         },
-        "counts": {"chains": 2, "blades": 3},
+        "pointer_fidelity": "both",
+        "pointers": [
+            {"src": u["alpha"], "dst": u["beta"], "kind": "see"},
+            {"src": u["a1"], "dst": u["ext1"], "kind": "name-ref",
+             "note": "exact alias match"},
+            {"src": u["ext2"], "dst": u["b1"], "kind": "see"},
+        ],
+        "counts": {"chains": 2, "blades": 3, "pointers": 3},
     }
     chain = {
         "root": {"uuid": u["alpha"], "space": "chain", "name": "Alpha"},
@@ -453,7 +651,11 @@ def _snap_payloads():
             ],
             "blades": [],
         },
-        "counts": {"chains": 1, "blades": 2},
+        "pointer_fidelity": "out",
+        "pointers": [
+            {"src": u["alpha"], "dst": u["beta"], "kind": "see"},
+        ],
+        "counts": {"chains": 1, "blades": 2, "pointers": 1},
     }
     blade = {
         "root": {"uuid": u["b1"], "space": "blade", "name": "beta blade"},
@@ -463,7 +665,11 @@ def _snap_payloads():
             "blades": [{"id": u["b1"], "pos": 0, "text": "beta blade",
                         "chain_id": u["beta"], "chain_name": "Beta"}],
         },
-        "counts": {"chains": 0, "blades": 1},
+        "pointer_fidelity": "out",
+        "pointers": [
+            {"src": u["b1"], "dst": u["ext1"], "kind": "name-ref"},
+        ],
+        "counts": {"chains": 0, "blades": 1, "pointers": 1},
     }
     return section, chain, blade
 
@@ -479,6 +685,13 @@ class RendererSnapshots(unittest.TestCase):
         expected_doc = {
             "root": {"uuid": u["arc"], "space": "section", "name": "Arc"},
             "exported_at": SNAP_ISO,
+            "pointer_fidelity": "both",
+            "pointers": [
+                {"src": u["alpha"], "dst": u["beta"], "kind": "see"},
+                {"src": u["a1"], "dst": u["ext1"], "kind": "name-ref",
+                 "note": "exact alias match"},
+                {"src": u["ext2"], "dst": u["b1"], "kind": "see"},
+            ],
             "stack": {
                 "sections": [{"id": u["arc"], "name": "Arc"}],
                 "chains": [
@@ -499,6 +712,10 @@ class RendererSnapshots(unittest.TestCase):
         expected_doc = {
             "root": {"uuid": u["b1"], "space": "blade", "name": "beta blade"},
             "exported_at": SNAP_ISO,
+            "pointer_fidelity": "out",
+            "pointers": [
+                {"src": u["b1"], "dst": u["ext1"], "kind": "name-ref"},
+            ],
             "stack": {
                 "sections": [],
                 "chains": [],
@@ -519,42 +736,54 @@ class RendererSnapshots(unittest.TestCase):
             '{"space":"blade","uuid":"%s","name":"Alpha","pos":1,"text":"second line"}\n'
             '{"space":"chain","uuid":"%s","name":"Beta"}\n'
             '{"space":"blade","uuid":"%s","name":"Beta","pos":0,"text":"beta blade"}\n'
-            % (u["arc"], u["alpha"], u["a1"], u["a2"], u["beta"], u["b1"]))
+            '{"space":"pointer","src":"%s","dst":"%s","kind":"see"}\n'
+            '{"space":"pointer","src":"%s","dst":"%s","kind":"name-ref","note":"exact alias match"}\n'
+            '{"space":"pointer","src":"%s","dst":"%s","kind":"see"}\n'
+            % (u["arc"], u["alpha"], u["a1"], u["a2"], u["beta"], u["b1"],
+               u["alpha"], u["beta"], u["a1"], u["ext1"], u["ext2"], u["b1"]))
         self.assertEqual(
             autoexport.render(self.chain, "ndjson", SNAP_ISO),
             '{"space":"chain","uuid":"%s","name":"Alpha"}\n'
             '{"space":"blade","uuid":"%s","name":"Alpha","pos":0,"text":"first line"}\n'
             '{"space":"blade","uuid":"%s","name":"Alpha","pos":1,"text":"second line"}\n'
-            % (u["alpha"], u["a1"], u["a2"]))
+            '{"space":"pointer","src":"%s","dst":"%s","kind":"see"}\n'
+            % (u["alpha"], u["a1"], u["a2"], u["alpha"], u["beta"]))
         self.assertEqual(
             autoexport.render(self.blade, "ndjson", SNAP_ISO),
             '{"space":"blade","uuid":"%s","name":"Beta","pos":0,"text":"beta blade"}\n'
-            % u["b1"])
+            '{"space":"pointer","src":"%s","dst":"%s","kind":"name-ref"}\n'
+            % (u["b1"], u["b1"], u["ext1"]))
 
     def test_csv(self):
         u = SNAP_UUIDS
         self.assertEqual(
             autoexport.render(self.section, "csv", SNAP_ISO),
-            "space,uuid,name,pos,text\n"
-            "section,%s,Arc,,\n"
-            "chain,%s,Alpha,,\n"
-            "blade,%s,Alpha,0,first line\n"
-            "blade,%s,Alpha,1,second line\n"
-            "chain,%s,Beta,,\n"
-            "blade,%s,Beta,0,beta blade\n"
-            % (u["arc"], u["alpha"], u["a1"], u["a2"], u["beta"], u["b1"]))
+            "space,uuid,name,src,dst,kind,pos,text,note\n"
+            "section,%s,Arc,,,,,,\n"
+            "chain,%s,Alpha,,,,,,\n"
+            "blade,%s,Alpha,,,,0,first line,\n"
+            "blade,%s,Alpha,,,,1,second line,\n"
+            "chain,%s,Beta,,,,,,\n"
+            "blade,%s,Beta,,,,0,beta blade,\n"
+            "pointer,,,%s,%s,see,,,\n"
+            "pointer,,,%s,%s,name-ref,,,exact alias match\n"
+            "pointer,,,%s,%s,see,,,\n"
+            % (u["arc"], u["alpha"], u["a1"], u["a2"], u["beta"], u["b1"],
+               u["alpha"], u["beta"], u["a1"], u["ext1"], u["ext2"], u["b1"]))
         self.assertEqual(
             autoexport.render(self.chain, "csv", SNAP_ISO),
-            "space,uuid,name,pos,text\n"
-            "chain,%s,Alpha,,\n"
-            "blade,%s,Alpha,0,first line\n"
-            "blade,%s,Alpha,1,second line\n"
-            % (u["alpha"], u["a1"], u["a2"]))
+            "space,uuid,name,src,dst,kind,pos,text,note\n"
+            "chain,%s,Alpha,,,,,,\n"
+            "blade,%s,Alpha,,,,0,first line,\n"
+            "blade,%s,Alpha,,,,1,second line,\n"
+            "pointer,,,%s,%s,see,,,\n"
+            % (u["alpha"], u["a1"], u["a2"], u["alpha"], u["beta"]))
         self.assertEqual(
             autoexport.render(self.blade, "csv", SNAP_ISO),
-            "space,uuid,name,pos,text\n"
-            "blade,%s,Beta,0,beta blade\n"
-            % u["b1"])
+            "space,uuid,name,src,dst,kind,pos,text,note\n"
+            "blade,%s,Beta,,,,0,beta blade,\n"
+            "pointer,,,%s,%s,name-ref,,,\n"
+            % (u["b1"], u["b1"], u["ext1"]))
 
     def test_md(self):
         u = SNAP_UUIDS
@@ -565,23 +794,36 @@ class RendererSnapshots(unittest.TestCase):
             "\n"
             "## Alpha\n"
             "<!-- uuid: %s -->\n"
+            "<!-- see -> %s -->\n"
             "*sections: Arc*\n"
             "- first line <!-- uuid: %s -->\n"
+            "<!-- name-ref -> %s -->\n"
+            "<!-- note: exact alias match -->\n"
             "- second line <!-- uuid: %s -->\n"
             "\n"
             "## Beta\n"
             "<!-- uuid: %s -->\n"
             "*sections: Arc, Side*\n"
             "- beta blade <!-- uuid: %s -->\n"
-            % (u["arc"], u["alpha"], u["a1"], u["a2"], u["beta"], u["b1"]))
+            "\n"
+            "## Inbound\n"
+            "- %s [see] -> %s\n"
+            % (u["arc"], u["alpha"], u["beta"], u["a1"], u["ext1"], u["a2"],
+               u["beta"], u["b1"], u["ext2"], u["b1"]))
+        # the internal row (Alpha->Beta) renders exactly once, as an outgoing
+        # comment under its src owner; it never enters the Inbound block
+        body = autoexport.render(self.section, "md", SNAP_ISO)
+        self.assertEqual(body.count("<!-- see -> %s -->" % u["beta"]), 1)
+        self.assertNotIn("- %s [" % u["alpha"], body)
         self.assertEqual(
             autoexport.render(self.chain, "md", SNAP_ISO),
             "# Alpha\n"
             "<!-- uuid: %s -->\n"
+            "<!-- see -> %s -->\n"
             "*sections: Arc*\n"
             "- first line <!-- uuid: %s -->\n"
             "- second line <!-- uuid: %s -->\n"
-            % (u["alpha"], u["a1"], u["a2"]))
+            % (u["alpha"], u["beta"], u["a1"], u["a2"]))
         self.assertEqual(
             autoexport.render(self.blade, "md", SNAP_ISO),
             "# beta blade\n"
@@ -589,7 +831,8 @@ class RendererSnapshots(unittest.TestCase):
             "\n"
             "*chain: Beta*\n"
             "- beta blade <!-- uuid: %s pos: 0 -->\n"
-            % (u["b1"], u["b1"]))
+            "<!-- name-ref -> %s -->\n"
+            % (u["b1"], u["b1"], u["ext1"]))
 
     def test_bad_format_rejected(self):
         with self.assertRaises(ValueError):

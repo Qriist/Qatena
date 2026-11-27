@@ -65,9 +65,17 @@ process.
 footprint would need every write handler to record every structurally-relevant UUID —
 membership changes, blade re-parenting, membership unions in merges — fragile by
 construction. A bounded read of the stack is *provably* correct for "did the stack change, in
-any way" and costs nothing measurable at this scale. Pointers and timestamps are excluded, so
-no-op upserts and pointer-only writes don't re-export; membership changes do (membership is
-content).
+any way" and costs nothing measurable at this scale. Timestamps are excluded, so no-op
+upserts don't re-export; membership changes do (membership is content).
+
+**Pointer fidelity.** The pointer layer is a registerable field per export:
+`pointer_fidelity` (`none` | `in` | `out` | `both`, default `out`) selects which pointer rows
+the file carries — rows with `src` inside the stack (`out`), rows entering it (`in`,
+backlinks), either (`both`), or none. Rows are dead `{src, dst, kind}` identifiers, never
+resolved: no mode can pull referenced content into the export, so nothing is recursive or
+combinatorial in any mode. The mode is signed into the stack signature, so changing it
+re-exports, and a pointer write re-exports exactly the registers whose mode includes the
+row's direction.
 
 The exporter child opens the vault read-only and then does exactly one small read-write
 transaction (store `last_sig`/`last_emitted` + mint the export log row) — the one sanctioned
@@ -128,7 +136,8 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
   UUIDv7 is the routing key required on every other verb (multi-vault routing, above).
   `action: "register_autoexport"` / `"deregister_autoexport"` are key-bearing vault actions:
   register a stack (section/chain/blade root) for automatic sig-gated export to a file
-  (Autoexport, above), or remove the register
+  (Autoexport, above; optional `pointer_fidelity` selects the pointer layer carried, default
+  `out`), or remove the register
 
 **Chain writes**
 - `chain_put` — upsert by UUID or name; presence-mask fields (`name`, `sections`, …); fresh UUIDv7 if absent. Renames and refiling are just this.

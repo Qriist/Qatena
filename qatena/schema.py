@@ -106,21 +106,36 @@ STATEMENTS = [
   updated INTEGER NOT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS autoexport_registers (
-  root_uuid    TEXT(36) NOT NULL,
-  emit_path    TEXT     NOT NULL,
-  emit_format  TEXT     NOT NULL,
-  last_sig     TEXT,                -- NULL until first successful export
-  last_emitted INTEGER,             -- Unix ns of last successful export
-  created      INTEGER NOT NULL,
+  root_uuid        TEXT(36) NOT NULL,
+  emit_path        TEXT     NOT NULL,
+  emit_format      TEXT     NOT NULL,
+  pointer_fidelity TEXT     NOT NULL DEFAULT 'out',  -- none | in | out | both
+  last_sig         TEXT,                -- NULL until first successful export
+  last_emitted     INTEGER,             -- Unix ns of last successful export
+  created          INTEGER NOT NULL,
   PRIMARY KEY (root_uuid, emit_path)
 )""",
 ]
 
 
+def _migrate_autoexport_registers(conn):
+    """Idempotent migration for vaults bootstrapped before pointer_fidelity
+    existed: the table above was created without the column, so add it.
+    SQLite allows ADD COLUMN with NOT NULL when the default is a constant."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(autoexport_registers)")}
+    if "pointer_fidelity" not in cols:
+        conn.execute(
+            "ALTER TABLE autoexport_registers "
+            "ADD COLUMN pointer_fidelity TEXT NOT NULL DEFAULT 'out'"
+        )
+
+
 def bootstrap(conn):
     """Create the full schema on a fresh DB; no-op on an existing one.
 
-    Idempotent: safe to run on every server start.
+    Idempotent: safe to run on every server start. Pre-existing vaults are
+    migrated in place (autoexport_registers gains pointer_fidelity).
     """
     for stmt in STATEMENTS:
         conn.execute(stmt)
+    _migrate_autoexport_registers(conn)

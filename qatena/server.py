@@ -737,6 +737,16 @@ TOOLS = [
                         "ndjson"
                     ],
                     "description": "For register_autoexport only: export format. Re-registering the same root+path with a different format replaces it. Not used by create or deregister."
+                },
+                "pointer_fidelity": {
+                    "type": "string",
+                    "enum": [
+                        "none",
+                        "in",
+                        "out",
+                        "both"
+                    ],
+                    "description": "For register_autoexport only: pointer layer of the export — 'out' rows leaving the stack, 'in' rows entering it, 'both' either, 'none' no pointer markup. Omitted = 'out' at creation; omitted on re-register keeps the stored value (presence-mask). The mode is signed into the stack signature. Not used by create or deregister."
                 }
             },
             "required": [
@@ -818,33 +828,41 @@ def _validate_routing_key(key, vault_dir):
 _STACKABLE_ROOTS = ("section", "chain", "blade")
 
 
-def _register_tx(conn, now, root, space, emit_path, emit_format):
+def _register_tx(conn, now, root, space, emit_path, emit_format, pointer_fidelity=None):
     """Upsert the register row and mint its log row, one transaction.
 
     Identity (root_uuid, emit_path); re-registering with a different format
-    replaces it. Returns (replaced, log_id).
+    OR pointer_fidelity replaces it. pointer_fidelity is presence-masked:
+    None = keep the stored value ('out' on creation).
+    Returns (replaced, log_id, effective_fidelity).
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = conn.execute(
-            "SELECT emit_format FROM autoexport_registers "
+            "SELECT emit_format, pointer_fidelity FROM autoexport_registers "
             "WHERE root_uuid = ? AND emit_path = ?",
             (root, emit_path),
         ).fetchone()
         if existing is None:
             replaced = False
+            fidelity = pointer_fidelity if pointer_fidelity is not None else "out"
             conn.execute(
-                "INSERT INTO autoexport_registers (root_uuid, emit_path, emit_format, created) "
-                "VALUES (?, ?, ?, ?)",
-                (root, emit_path, emit_format, now),
+                "INSERT INTO autoexport_registers "
+                "(root_uuid, emit_path, emit_format, pointer_fidelity, created) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (root, emit_path, emit_format, fidelity, now),
             )
         else:
-            replaced = existing["emit_format"] != emit_format
+            fidelity = (pointer_fidelity if pointer_fidelity is not None
+                        else existing["pointer_fidelity"])
+            fid_changed = (pointer_fidelity is not None
+                           and pointer_fidelity != existing["pointer_fidelity"])
+            replaced = existing["emit_format"] != emit_format or fid_changed
             if replaced:
                 conn.execute(
-                    "UPDATE autoexport_registers SET emit_format = ? "
+                    "UPDATE autoexport_registers SET emit_format = ?, pointer_fidelity = ? "
                     "WHERE root_uuid = ? AND emit_path = ?",
-                    (emit_format, root, emit_path),
+                    (emit_format, fidelity, root, emit_path),
                 )
         body = json.dumps(
             {
@@ -853,6 +871,7 @@ def _register_tx(conn, now, root, space, emit_path, emit_format):
                 "root_space": space,
                 "emit_path": emit_path,
                 "emit_format": emit_format,
+                "pointer_fidelity": fidelity,
                 "replaced": replaced,
             },
             sort_keys=True, separators=(",", ":"),
@@ -872,7 +891,7 @@ def _register_tx(conn, now, root, space, emit_path, emit_format):
         except sqlite3.Error:
             pass
         raise
-    return replaced, cur.lastrowid
+    return replaced, cur.lastrowid, fidelity
 
 
 def _deregister_tx(conn, now, root, emit_path):
@@ -929,6 +948,10 @@ def _call_register_autoexport(vault_dir, arguments):
         return _tool_error("validation_failed",
                            f"emit_format must be one of {list(autoexport.ALLOWED_FORMATS)}: "
                            f"got {emit_format!r}"), True
+    pointer_fidelity = arguments.get("pointer_fidelity")
+    if pointer_fidelity is not None and pointer_fidelity not in autoexport.POINTER_FIDELITIES:
+        return _tool_error("validation_failed",
+                           "pointer_fidelity must be one of none, in, out, both"), True
 
     conn = db.connect(path)
     try:
@@ -943,8 +966,9 @@ def _call_register_autoexport(vault_dir, arguments):
                                "section, chain, or blade)"), True
         space = res["space"]
         now = db.now_ns()
-        replaced, log_id = _register_tx(conn, now, root, space, emit_path, emit_format)
-        payload = autoexport.compute_stack(conn, root)
+        replaced, log_id, fidelity = _register_tx(
+            conn, now, root, space, emit_path, emit_format, pointer_fidelity)
+        payload = autoexport.compute_stack(conn, root, fidelity)
         # Synchronous first export (SPEC 3.18): registration is a setup call,
         # not a hot path — the response reports the initial write's outcome.
         exported, exported_at, export_error = True, None, None
@@ -958,6 +982,7 @@ def _call_register_autoexport(vault_dir, arguments):
             "root_space": space,
             "emit_path": emit_path,
             "emit_format": emit_format,
+            "pointer_fidelity": fidelity,
             "stack": {"chains": payload["counts"]["chains"],
                       "blades": payload["counts"]["blades"]},
             "exported": exported,
@@ -1048,7 +1073,8 @@ def _autoexport_check(conn, vault_path):
     """
     try:
         regs = conn.execute(
-            "SELECT root_uuid, emit_path, emit_format, last_sig FROM autoexport_registers"
+            "SELECT root_uuid, emit_path, emit_format, last_sig, pointer_fidelity "
+            "FROM autoexport_registers"
         ).fetchall()
     except sqlite3.Error as e:
         print(f"qatena: autoexport check failed to list registers: {e!r}", file=sys.stderr)
@@ -1058,7 +1084,8 @@ def _autoexport_check(conn, vault_path):
     for reg in regs:
         key = (reg["root_uuid"], reg["emit_path"])
         try:
-            payload = autoexport.compute_stack(conn, reg["root_uuid"])
+            payload = autoexport.compute_stack(
+                conn, reg["root_uuid"], reg["pointer_fidelity"])
             if payload is None:
                 continue  # root died; its register row was cascade-deleted with it
             sig = autoexport.stack_signature(payload)

@@ -714,16 +714,45 @@ only — and a destination file + format:
 Every committed write is followed by one post-commit check (one hook in the server's routed
 write path; `batch` = one check for the whole transaction; read verbs and the register /
 deregister actions themselves are excluded). For each active register the server compares the
-**stack signature** — a stable content-only hash over the ordered stack:
-`(root uuid, root space, root name)` + per chain `(uuid, name, sorted section names,
-[(blade uuid, text)] in pos order)` — against the stored `last_sig`. On change, the exporter
+**stack signature** — a stable content-only hash over the ordered stack and the register's
+**pointer layer**: `(root uuid, root space, root name, fidelity mode)` + per chain `(uuid,
+name, sorted section names, [(blade uuid, text)] in pos order)` + the sorted pointer rows —
+against the stored `last_sig`. On change, the exporter
 child (`python -m qatena.autoexport <vault> <root> <path> <format>`) is spawned detached; it
-re-reads committed truth, renders the format, and atomically rewrites the file. Pointers,
-timestamps, logs, and section orientation are excluded, so no-op upserts do not re-export and
-pointer-only changes do not — but a chain refiled into / out of a registered section does
-(membership is content), and the chain's own register re-exports too (its section list is in
-its signature). A blade root's signature is `(uuid, text)` only, so moving a registered blade
-between chains does not re-export it.
+re-reads committed truth, renders the format, and atomically rewrites the file. Timestamps,
+logs, and section orientation are excluded, so no-op upserts do not re-export — but a chain
+refiled into / out of a registered section does (membership is content), and the chain's own
+register re-exports too (its section list is in its signature). A blade root's stack is
+`(uuid, text)` only, so moving a registered blade between chains does not re-export it (a
+move changes no pointer row).
+
+**Pointer layer (`pointer_fidelity`).** Each register selects which pointer rows the export
+carries, against the stack's **endpoint set** `E` = the root UUID + every chain UUID + every
+blade UUID in the stack (all live pointer endpoints; sections count). Rows are carried as
+**dead identifiers** — `{src, dst, kind}` + `note` when present — fetched in one query over
+`pointers`; endpoints are never resolved or traversed, so no mode can pull referenced content
+into the export: every export is bounded and non-recursive by construction.
+
+- `none` — no pointer rows (the pre-fidelity pointer-excluded behavior)
+- `out` — rows with `src` in E (the stack's outbound references) — **default**, outward-facing
+- `in` — rows with `dst` in E (backlinks: outside → inside)
+- `both` — rows with either endpoint in E
+
+Each row appears exactly once, sorted by `(src, dst, kind, note)`. Because the layer is
+signed, `pointer_add` / `pointer_remove` re-export exactly the registers whose mode includes
+the row's direction: an outside → inside write never re-exports an `out` register; an inside
+→ outside write never re-exports an `in` one. Renaming an external endpoint re-exports
+nothing (no endpoint name is carried). Liveness caveat: the file carries pointer identifiers,
+not endpoint liveness — a deleted external endpoint leaves its UUID in the file until the
+pointer row itself changes.
+
+Renderers: `json` gains top-level `pointer_fidelity` + `pointers`; `ndjson` appends
+`{"space": "pointer", "src", "dst", "kind"(, "note")}` lines after the entity lines; `csv`
+`space,uuid,name,src,dst,kind,pos,text,note` (pointer rows leave `uuid`/`name` blank); `md`
+renders outgoing rows as `<!-- kind -> dst -->` comment lines under the owning entity
+(plus `<!-- note: ... -->`), and modes `in` / `both` add a trailing `## Inbound` block of
+`- src [kind] -> dst` rows — in `both`, a row with both endpoints inside the stack renders
+exactly once (under its `src` owner), never duplicated into the block.
 
 `register_autoexport` (key-bearing):
 
@@ -732,14 +761,17 @@ between chains does not re-export it.
 - `emit_path` — used exactly as given; non-empty, parent directory must exist
   (`validation_failed` otherwise).
 - `emit_format` — one of `md` | `csv` | `json` | `ndjson` (`validation_failed` otherwise).
+- `pointer_fidelity` (optional) — one of `none` | `in` | `out` | `both`
+  (`validation_failed` otherwise); see the pointer layer above. **Presence-masked**: omitted
+  at creation → `out`; omitted on re-register → keep the stored value.
 - Upsert on identity `(root_uuid, emit_path)`: re-registering the same root + path with a
-  different format REPLACES the format (`replaced: true` in the response).
+  different format **or** fidelity REPLACES it (`replaced: true` in the response).
 - **Synchronous first export** at registration (the response reports the initial write):
   `exported: false` + `export_error` on failure — the register row is kept and the export
   self-heals on the next changed write.
 - Mints one log row (area `autoexport`). Response:
-  `{root, root_space, emit_path, emit_format, stack: {chains, blades}, exported, exported_at
-  (iso), replaced, log_id}`.
+  `{root, root_space, emit_path, emit_format, pointer_fidelity, stack: {chains, blades},
+  exported, exported_at (iso), replaced, log_id}`.
 
 `deregister_autoexport` (key-bearing): deletes the register row for `(root, emit_path)`
 (`not_found` if absent), mints one log row (area `autoexport`), and returns
@@ -750,11 +782,15 @@ never deletes user files.
 the stack signature actually changed. Self-healing: any failed export (disk full, path lost,
 crash) leaves `last_sig` stale, so the next changed write re-triggers automatically — no queue,
 no retry bookkeeping. The exporter child is the one sanctioned exception to the sole-write
-surface: it opens the vault **read-only**, then does exactly one small read-write transaction
-(store `last_sig` / `last_emitted`, mint the export log row — area `autoexport`, title
-`autoexport <root-space> <root-uuid> -> <emit_path>`, root ref op `referenced`). Cascade:
-deleting a registered root (`chain_delete` / `blade_delete`) deletes its register rows in the
-same transaction — a dead root can never re-trigger, and UUIDs are never reused.
+surface: it opens the vault **read-only** (first re-reading its own register row — absent,
+i.e. deregistered in flight, is a clean no-op: no file write, no log), then does exactly one
+small read-write transaction (store `last_sig` / `last_emitted`, mint the export log row —
+area `autoexport`, title `autoexport <root-space> <root-uuid> -> <emit_path>`, root ref op
+`referenced`). Cascade: deleting a registered root (`chain_delete` / `blade_delete`) deletes
+its register rows in the same transaction — a dead root can never re-trigger, and UUIDs are
+never reused. Pre-existing vaults (bootstrapped before `pointer_fidelity`) are migrated in
+place by `schema.bootstrap` on next open: the column is added with default `out`,
+idempotently.
 
 ```json
 {
@@ -766,7 +802,8 @@ same transaction — a dead root can never re-trigger, and UUIDs are never reuse
       "action": { "type": "string", "enum": ["create", "register_autoexport", "deregister_autoexport"], "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport additionally requires 'emit_format'." },
       "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport: the stack root — a LIVE section, chain, or blade (register); the registered root (deregister). Not used by create." },
       "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport: destination file path, used exactly as given; the parent directory must exist. Not used by create." },
-      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport only: export format. Re-registering the same root+path with a different format replaces it. Not used by create or deregister." }
+      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport only: export format. Re-registering the same root+path with a different format replaces it. Not used by create or deregister." },
+      "pointer_fidelity": { "type": "string", "enum": ["none", "in", "out", "both"], "description": "For register_autoexport only: pointer layer of the export — 'out' rows leaving the stack, 'in' rows entering it, 'both' either, 'none' no pointer markup. Omitted = 'out' at creation; omitted on re-register keeps the stored value (presence-mask). The mode is signed into the stack signature. Not used by create or deregister." }
     },
     "required": ["action"]
   }

@@ -32,6 +32,7 @@ import sys
 from . import db
 
 ALLOWED_FORMATS = ("md", "csv", "json", "ndjson")
+POINTER_FIDELITIES = ("none", "in", "out", "both")
 
 
 # ------------------------------------------------------------- stack compute
@@ -63,7 +64,57 @@ def _chain_stack(conn, chain_id):
     return {"id": h["id"], "name": h["name"], "sections": secs, "blades": blades}
 
 
-def compute_stack(conn, root_uuid):
+def _endpoint_set(payload):
+    """Endpoint set E for a computed stack (SPEC 3.18): the root uuid itself
+    (section, chain, and blade roots all count — sections are a valid pointer
+    endpoint space per SPEC 1.7) + every chain uuid + every blade uuid."""
+    e = {payload["root"]["uuid"]}
+    for ch in payload["stack"]["chains"]:
+        e.add(ch["id"])
+        for b in ch["blades"]:
+            e.add(b["id"])
+    for b in payload["stack"]["blades"]:
+        e.add(b["id"])
+    return e
+
+
+def _pointer_layer(conn, payload, fidelity):
+    """The register's pointer layer P, filtered by mode (SPEC 3.18).
+
+    One query over `pointers`; skipped entirely for `none`:
+      none -> []
+      out  -> rows where src_uuid IN E
+      in   -> rows where dst_uuid IN E
+      both -> rows where src_uuid IN E OR dst_uuid IN E
+    Each row appears exactly once, as {"src","dst","kind"} plus "note" only
+    when non-NULL, sorted by (src, dst, kind, note or "").
+    """
+    if fidelity == "none":
+        return []
+    e = _endpoint_set(payload)
+    ph = ",".join("?" * len(e))
+    if fidelity == "out":
+        sql = f"SELECT src_uuid, dst_uuid, kind, note FROM pointers WHERE src_uuid IN ({ph})"
+        args = list(e)
+    elif fidelity == "in":
+        sql = f"SELECT src_uuid, dst_uuid, kind, note FROM pointers WHERE dst_uuid IN ({ph})"
+        args = list(e)
+    else:  # both
+        sql = (f"SELECT src_uuid, dst_uuid, kind, note FROM pointers "
+               f"WHERE src_uuid IN ({ph}) OR dst_uuid IN ({ph})")
+        args = list(e) * 2
+    rows = conn.execute(sql, args).fetchall()
+    layer = []
+    for r in rows:
+        d = {"src": r["src_uuid"], "dst": r["dst_uuid"], "kind": r["kind"]}
+        if r["note"] is not None:
+            d["note"] = r["note"]
+        layer.append(d)
+    layer.sort(key=lambda d: (d["src"], d["dst"], d["kind"], d.get("note", "")))
+    return layer
+
+
+def compute_stack(conn, root_uuid, fidelity="out"):
     """Compute the stack rooted at root_uuid, or None if it does not resolve.
 
     Stack definition (SPEC 3.18):
@@ -71,7 +122,26 @@ def compute_stack(conn, root_uuid):
       root = chain:   the chain + its blades (in blade_order)
       root = blade:   the blade itself (a leaf; its chain is shown as
                       presentation context only, never part of the signature)
+
+    fidelity (none | in | out | both) selects the pointer layer P carried in
+    the payload (key "pointers", counted in "counts"["pointers"], and signed
+    into the stack signature).
     """
+    if fidelity not in POINTER_FIDELITIES:
+        raise ValueError(
+            f"unknown pointer_fidelity {fidelity!r} (allowed: {list(POINTER_FIDELITIES)})"
+        )
+    base = _compute_stack_base(conn, root_uuid)
+    if base is None:
+        return None
+    base["pointer_fidelity"] = fidelity
+    base["pointers"] = _pointer_layer(conn, base, fidelity)
+    base["counts"]["pointers"] = len(base["pointers"])
+    return base
+
+
+def _compute_stack_base(conn, root_uuid):
+    """The stack payload without the pointer layer (see compute_stack)."""
     row = conn.execute(
         "SELECT id, name FROM chain_sections WHERE id = ?", (root_uuid,)
     ).fetchone()
@@ -139,14 +209,16 @@ def compute_stack(conn, root_uuid):
 # --------------------------------------------------------------- signatures
 
 def stack_signature(payload):
-    """Stable content-only hash over the ordered stack (SPEC 3.18).
+    """Stable content-only hash over the ordered stack + pointer layer.
 
-    (root uuid, root space, root name) + per chain (uuid, name, sorted
-    section names, [(blade uuid, text)] in pos order). Excluded: pointers,
-    timestamps, logs, section orientation/note.
+    (root uuid, root space, root name, MODE) + per chain (uuid, name, sorted
+    section names, [(blade uuid, text)] in pos order) + the sorted pointer
+    rows. The mode is deliberately signed so that changing the mode on a
+    re-register re-exports. Excluded: timestamps, logs, section
+    orientation/note.
     """
     root = payload["root"]
-    parts = [root["uuid"], root["space"], root["name"]]
+    parts = [root["uuid"], root["space"], root["name"], payload["pointer_fidelity"]]
     for ch in payload["stack"]["chains"]:
         parts.append([
             "chain", ch["id"], ch["name"], ch["sections"],
@@ -154,6 +226,7 @@ def stack_signature(payload):
         ])
     for b in payload["stack"]["blades"]:
         parts.append(["blade", b["id"], b["text"]])
+    parts.append(payload["pointers"])  # already sorted (src, dst, kind, note or "")
     canon = json.dumps(parts, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -164,6 +237,8 @@ def _render_json(payload, exported_at):
     doc = {
         "root": payload["root"],
         "exported_at": exported_at,
+        "pointer_fidelity": payload["pointer_fidelity"],
+        "pointers": payload["pointers"],
         "stack": {
             "sections": payload["stack"]["sections"],
             "chains": payload["stack"]["chains"],
@@ -189,6 +264,12 @@ def _ndjson_lines(payload):
             "space": "blade", "uuid": b["id"], "name": b["chain_name"],
             "pos": b["pos"], "text": b["text"],
         })
+    for r in payload["pointers"]:
+        line = {"space": "pointer", "src": r["src"], "dst": r["dst"],
+                "kind": r["kind"]}
+        if "note" in r:
+            line["note"] = r["note"]
+        lines.append(line)
     return lines
 
 
@@ -202,40 +283,91 @@ def _render_ndjson(payload, exported_at):
 def _render_csv(payload, exported_at):
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(["space", "uuid", "name", "pos", "text"])
+    writer.writerow(["space", "uuid", "name", "src", "dst", "kind",
+                     "pos", "text", "note"])
     for line in _ndjson_lines(payload):
-        writer.writerow([
-            line["space"], line["uuid"], line["name"],
-            line.get("pos", ""), line.get("text", ""),
-        ])
+        if line["space"] == "pointer":
+            writer.writerow([line["space"], "", "", line["src"], line["dst"],
+                             line["kind"], "", "", line.get("note", "")])
+        else:
+            writer.writerow([line["space"], line["uuid"], line["name"],
+                             "", "", "", line.get("pos", ""),
+                             line.get("text", ""), ""])
     return buf.getvalue()
 
 
-def _chain_block(out, ch, top_level):
+def _md_out_lines(payload, uuid):
+    """The md comment lines for one entity's OUTGOING pointers (modes
+    out/both only). Rows are already sorted, so per-src order is stable."""
+    if payload["pointer_fidelity"] not in ("out", "both"):
+        return []
+    lines = []
+    for r in payload["pointers"]:
+        if r["src"] == uuid:
+            lines.append(f"<!-- {r['kind']} -> {r['dst']} -->")
+            if "note" in r:
+                lines.append(f"<!-- note: {r['note']} -->")
+    return lines
+
+
+def _md_inbound_rows(payload):
+    """The md Inbound block rows (modes in/both only). A row whose src is
+    already in the stack is rendered exactly once under its src owner
+    (out/both), so it is excluded here; mode `in` keeps every row."""
+    if payload["pointer_fidelity"] not in ("in", "both"):
+        return []
+    e = _endpoint_set(payload)
+    if payload["pointer_fidelity"] == "in":
+        return list(payload["pointers"])
+    return [r for r in payload["pointers"]
+            if r["dst"] in e and r["src"] not in e]
+
+
+def _chain_block(out, ch, top_level, md_out):
     """One chain's lines; top-level chains are '##', the root chain itself
     renders directly under the root heading."""
-    if not top_level:
+    if top_level:
+        out.extend(md_out(ch["id"]))
+    else:
         out.append("")
         out.append(f"## {ch['name']}")
         out.append(f"<!-- uuid: {ch['id']} -->")
+        out.extend(md_out(ch["id"]))
     if ch["sections"]:
         out.append("*sections: " + ", ".join(ch["sections"]) + "*")
     for b in ch["blades"]:
         out.append(f"- {b['text']} <!-- uuid: {b['id']} -->")
+        out.extend(md_out(b["id"]))
 
 
 def _render_md(payload, exported_at):
     root = payload["root"]
     out = [f"# {root['name']}", f"<!-- uuid: {root['uuid']} -->"]
+    if root["space"] == "section":
+        # the section root line is the section's own line; a chain root's
+        # outgoing pointers render at the top-level chain block, a blade
+        # root's at its blade line below
+        out.extend(_md_out_lines(payload, root["uuid"]))
     # stack.sections is non-empty only for a section root, where it is the
     # root itself — already the root heading above
     for ch in payload["stack"]["chains"]:
-        _chain_block(out, ch, top_level=(root["space"] == "chain" and ch["id"] == root["uuid"]))
+        _chain_block(out, ch,
+                     top_level=(root["space"] == "chain" and ch["id"] == root["uuid"]),
+                     md_out=lambda uid: _md_out_lines(payload, uid))
     for b in payload["stack"]["blades"]:
         # presentation context only — not part of the signature (SPEC 3.18)
         out.append("")
         out.append(f"*chain: {b['chain_name']}*")
         out.append(f"- {b['text']} <!-- uuid: {b['id']} pos: {b['pos']} -->")
+        out.extend(_md_out_lines(payload, b["id"]))
+    inbound = _md_inbound_rows(payload)
+    if inbound:
+        out.append("")
+        out.append("## Inbound")
+        for r in inbound:
+            out.append(f"- {r['src']} [{r['kind']}] -> {r['dst']}")
+            if "note" in r:
+                out.append(f"<!-- note: {r['note']} -->")
     return "\n".join(out) + "\n"
 
 
@@ -274,12 +406,17 @@ def _open_readonly(vault_path):
 def export(vault_path, root_uuid, emit_path, emit_format):
     """Run one full export. Raises on failure — the caller self-heals.
 
-    1. re-read committed state READ-ONLY, compute stack + signature;
+    0. re-read this register's own row (root_uuid, emit_path) from the
+       read-only connection; if it is absent (deregistered in flight),
+       return a no-op WITHOUT writing the file or minting a log;
+    1. re-read committed state READ-ONLY, compute stack + signature (using
+       the register row's pointer_fidelity);
     2. render to <emit_path>.tmp-<random>, then os.replace (atomic);
     3. one small RW transaction: store last_sig/last_emitted + mint the
        export log row (area "autoexport", root ref op "referenced").
 
-    Returns {"exported_at": iso, "sig": str, "log_id": int}.
+    Returns {"exported_at": iso, "sig": str, "log_id": int} or a no-op
+    {"exported_at": None, "sig": None, "log_id": None, "noop": ...}.
     """
     if emit_format not in ALLOWED_FORMATS:
         raise ValueError(
@@ -287,13 +424,24 @@ def export(vault_path, root_uuid, emit_path, emit_format):
         )
     ro = _open_readonly(vault_path)
     try:
-        payload = compute_stack(ro, root_uuid)
+        reg = ro.execute(
+            "SELECT pointer_fidelity FROM autoexport_registers "
+            "WHERE root_uuid = ? AND emit_path = ?",
+            (root_uuid, emit_path),
+        ).fetchone()
+        if reg is None:
+            # deregistered in flight: nothing to do, no file write, no log
+            return {"exported_at": None, "sig": None, "log_id": None,
+                    "noop": "deregistered"}
+        fidelity = reg["pointer_fidelity"]
+        payload = compute_stack(ro, root_uuid, fidelity)
     finally:
         ro.close()
     if payload is None:
         # root no longer resolves (deleted after the hook fired): nothing to do;
         # the register row is cascade-deleted with it
-        return {"exported_at": None, "sig": None, "log_id": None}
+        return {"exported_at": None, "sig": None, "log_id": None,
+                "noop": "root_gone"}
 
     now = db.now_ns()
     exported_at = db.ns_to_iso(now)
