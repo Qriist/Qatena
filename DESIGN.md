@@ -111,7 +111,17 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 - **Merge retargeting** — `chain_merge` retargets pointers aimed at the dissolved chain's header onto the survivor; the dissolved header's UUID stops resolving.
 - **Auto-link strictness** — exact name match only mints pointers; near-matches are returned as candidates, never linked silently.
 
+## Concretization (spec pass, 2026-11-27)
+
+- **`logs.id`** — `INTEGER PRIMARY KEY AUTOINCREMENT`: the strongest sequential promise; append-only so the cost is nil.
+- **Timestamps** — stored as Unix epoch **nanoseconds** (`INTEGER`); the tool surface renders and accepts ISO-8601 UTC. Precision outranks human readability of the raw value.
+- **UUID storage** — canonical `TEXT(36)` for v1; conversion to `BLOB(16)` is a **finalizing step** at project end (storage-only, tool surface unchanged).
+- **Name uniqueness** — `UNIQUE` per table (per space) on all alias fields; **cross-space collisions allowed** — a name may carry real meaning at multiple strata. Consequence: auto-linking exact matches mint `name-ref` to every entity bearing the name (≤ 1 per space), each enumerated in the response.
+- **Implementation** — Python 3, stdlib `sqlite3`, single stdio MCP server process (the sole write surface).
+
 ## Open items
 
-- Name-uniqueness constraint (parked: `chain_headers.name` / `chain_sections.name` / others — settle in the spec pass).
-- Full DDL + MCP tool schemas (the next artifact).
+- Full DDL + MCP tool schemas — drafted in `SPEC.md` (tracked, uncommitted), pending review.
+- UUID storage → `BLOB(16)` (finalizing step).
+- `history` mechanism (field-level audit; contract reserved).
+- Agent-authored log entries (a possible 18th verb) — open.
