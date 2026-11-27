@@ -3,12 +3,16 @@ SQLite-based note storage for local AI agents, tailored to complex personal proj
 
 ## What it is
 
-Durable, itemizable, addressable, and malleable note storage for local AI agents:
-notes (**chains**) decompose into individually addressable units (**blades**),
-cross-references (**reblades**) are first-class and traversable, chains can be filed under any number of **intentions** (view-level categories, overlapping by design), and structure can be
-split, merged, and refiled without breaking references. It is a set of SQLite databases (one **vambrace** per project)
-behind a stdio MCP server that exposes a small, composite, batch-capable verb surface —
-one logical operation per call — with every invariant enforced server-side. Every call is routed by a **vambrace** key (a vambrace's UUIDv7 identity) to its project's vambrace; vambraces are created with the `vambrace` verb.
+Durable, itemizable, addressable, and malleable note storage for local AI agents.
+Notes (**chains**) decompose into individually addressable units (**blades**).
+Cross-references (**reblades**) are first-class and traversable.
+Chains can be filed under any number of **intentions** (view-level categories,
+overlapping by design). Structure can be split, merged, and refiled without breaking
+references. It is a set of SQLite databases (one **vambrace** per project) behind a
+stdio MCP server that exposes a small, composite, batch-capable verb surface —
+one logical operation per call — with every invariant enforced server-side. Every
+call is routed by a **vambrace** key (a vambrace's UUIDv7 identity) to its project's
+vambrace; vambraces are created with the `vambrace` verb.
 
 ## Repo layout
 
