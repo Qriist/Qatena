@@ -1,3 +1,6 @@
+# Local agent context file
+AGENTS.md
+
 # Local-only migration/reference material (source DB + Python shims)
 import_reference/
 
