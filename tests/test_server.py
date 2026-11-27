@@ -32,7 +32,7 @@ class ServerSmoke(unittest.TestCase):
     DEADLINE = 15  # seconds per line / wait
 
     def setUp(self):
-        self._armories = tempfile.mkdtemp(prefix="qatena-armories-")
+        self._armory = tempfile.mkdtemp(prefix="qatena-armories-")
         self._servers = []
         self.proc, self._lines = self._spawn()
         self._next_id = 0
@@ -48,19 +48,19 @@ class ServerSmoke(unittest.TestCase):
                 proc.wait(timeout=5)
             except Exception:
                 pass
-        shutil.rmtree(self._armories, ignore_errors=True)
+        shutil.rmtree(self._armory, ignore_errors=True)
 
     # -- spawn ---------------------------------------------------------------
     def _env(self):
         env = dict(os.environ)
         env.pop("QATENA_DB", None)  # retired: routing is QATENA_ARMORY + keys
         env["PYTHONPATH"] = REPO_ROOT
-        env["QATENA_ARMORY"] = self._armories
+        env["QATENA_ARMORY"] = self._armory
         env["PYTHONIOENCODING"] = "utf-8"
         return env
 
     def _spawn(self):
-        """Spawn a server against the shared temp armories dir and rebind the
+        """Spawn a server against the shared temp armory dir and rebind the
         transport state (self.proc / self._lines) to it, so tests that kill
         the server can respawn with the same QATENA_ARMORY."""
         proc = subprocess.Popen(
@@ -141,15 +141,15 @@ class ServerSmoke(unittest.TestCase):
         """Error code of a tool result (isError=True payload)."""
         return json.loads(result["content"][0]["text"])["error"]["code"]
 
-    def _create_armories(self):
+    def _create_vambrace(self):
         """Call the vambrace verb and return the minted routing key."""
         r = self._call_tool("vambrace", {"action": "equip"})
         self.assertFalse(r["isError"], "vambrace equip failed: %r" % r)
         body = json.loads(r["content"][0]["text"])
         key = body["vambrace"]
         self.assertRegex(key, UUID7_RE)
-        self.assertTrue(os.path.exists(os.path.join(self._armories, key + ".db")),
-                        "armory file %s.db missing from %s" % (key, self._armories))
+        self.assertTrue(os.path.exists(os.path.join(self._armory, key + ".db")),
+                        "vambrace file %s.db missing from %s" % (key, self._armory))
         return key
 
     # -- the smoke sequence ----------------------------------------------------
@@ -203,7 +203,7 @@ class ServerSmoke(unittest.TestCase):
             key = body["vambrace"]
             self.assertRegex(key, UUID7_RE)
             self.assertEqual(key[14], "7")
-            self.assertTrue(os.path.exists(os.path.join(self._armories, key + ".db")))
+            self.assertTrue(os.path.exists(os.path.join(self._armory, key + ".db")))
 
         with self.subTest("routed chain_put then get round-trips"):
             r1 = self._call_tool("chain_put", {"vambrace": key, "name": "The Forge"})
@@ -265,7 +265,7 @@ class ServerSmoke(unittest.TestCase):
                 self.assertTrue(r["isError"], "key %r should fail closed" % k)
                 self.assertEqual(self._code(r), "malformed_vambrace")
 
-        with self.subTest("well-formed key, no armory file -> unknown_vambrace"):
+        with self.subTest("well-formed key, no vambrace file -> unknown_vambrace"):
             ghost = new_uuid7()  # never created via the vambrace verb
             r = self._call_tool("chain_put", {"vambrace": ghost})
             self.assertTrue(r["isError"])
@@ -290,7 +290,7 @@ class ServerSmoke(unittest.TestCase):
             self.assertRegex(json.loads(r["content"][0]["text"])["vambrace"], UUID7_RE)
 
     def test_batch_takes_key_once_at_top_level(self):
-        key = self._create_armories()
+        key = self._create_vambrace()
         r = self._call_tool("batch", {
             "vambrace": key,
             "ops": [
@@ -316,13 +316,13 @@ class ServerSmoke(unittest.TestCase):
         self.assertEqual(self._code(r3), "missing_vambrace")
 
     def test_routing_survives_server_restart(self):
-        key = self._create_armories()
+        key = self._create_vambrace()
         r = self._call_tool("chain_put",
                             {"vambrace": key, "name": "Across Restart"})
         self.assertFalse(r["isError"])
         cid = json.loads(r["content"][0]["text"])["id"]
 
-        # kill the first server; routing state is the armory files themselves,
+        # kill the first server; routing state is the vambrace files themselves,
         # so a respawned server with the same QATENA_ARMORY routes the same key
         self.proc.kill()
         self.proc.wait(timeout=self.DEADLINE)

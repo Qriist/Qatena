@@ -17,7 +17,7 @@ from qatena.verbs import execute
 # SPEC 1.9 key format: 36-char lowercase hyphenated, version nibble 7.
 KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$")
 REBLADE_KINDS_V1 = {"name-ref", "supersedes", "part-of", "source", "see"}
-ARMORY_TABLES = {
+VAMBRACE_TABLES = {
     "chain_headers", "chain_intentions", "chain_intention_map", "chain_blades",
     "blade_order", "reblades", "reblade_kinds", "logs", "log_refs",
 }
@@ -25,24 +25,24 @@ ARMORY_TABLES = {
 
 class VambraceTestCase(unittest.TestCase):
     def setUp(self):
-        self.armories = tempfile.mkdtemp(prefix="qatena-vambrace-")
+        self.armory = tempfile.mkdtemp(prefix="qatena-vambrace-")
 
     def tearDown(self):
-        shutil.rmtree(self.armories, ignore_errors=True)
+        shutil.rmtree(self.armory, ignore_errors=True)
 
     # -- routing helpers ------------------------------------------------------
     def equip(self, arguments=None):
         if arguments is None:
             arguments = {"action": "equip"}
-        return server._call_vambrace(self.armories, arguments)
+        return server._call_vambrace(self.armory, arguments)
 
-    def make_armory(self):
+    def make_vambrace(self):
         payload, is_error = self.equip()
         self.assertFalse(is_error, "equip failed: %r" % payload)
         return payload["vambrace"]
 
     def routed(self, name, arguments):
-        return server._call_routed(self.armories, name, arguments)
+        return server._call_routed(self.armory, name, arguments)
 
     def expect_routed_error(self, code, name, arguments):
         payload, is_error = self.routed(name, arguments)
@@ -67,26 +67,26 @@ class Equip(VambraceTestCase):
         self.assertRegex(key, KEY_RE)
         self.assertEqual(key[14], "7")  # version nibble
 
-    def test_armory_file_exists_and_is_bootstrapped(self):
-        key = self.make_armory()
-        path = os.path.join(self.armories, key + ".db")
+    def test_vambrace_file_exists_and_is_bootstrapped(self):
+        key = self.make_vambrace()
+        path = os.path.join(self.armory, key + ".db")
         self.assertTrue(os.path.exists(path))
         conn = db.connect(path)
         try:
             tables = {r["name"] for r in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'")}
-            self.assertTrue(ARMORY_TABLES.issubset(tables),
-                            "missing armory tables: %s" % (ARMORY_TABLES - tables))
+            self.assertTrue(VAMBRACE_TABLES.issubset(tables),
+                            "missing vambrace tables: %s" % (VAMBRACE_TABLES - tables))
             kinds = {r["kind"] for r in conn.execute("SELECT kind FROM reblade_kinds")}
             self.assertEqual(kinds, REBLADE_KINDS_V1)
         finally:
             conn.close()
 
     def test_two_equips_are_distinct(self):
-        k1, k2 = self.make_armory(), self.make_armory()
+        k1, k2 = self.make_vambrace(), self.make_vambrace()
         self.assertNotEqual(k1, k2)
-        self.assertTrue(os.path.exists(os.path.join(self.armories, k1 + ".db")))
-        self.assertTrue(os.path.exists(os.path.join(self.armories, k2 + ".db")))
+        self.assertTrue(os.path.exists(os.path.join(self.armory, k1 + ".db")))
+        self.assertTrue(os.path.exists(os.path.join(self.armory, k2 + ".db")))
 
     def test_equip_ignores_stray_routing_key(self):
         # the vambrace verb takes no routing key of its own
@@ -141,7 +141,7 @@ class FailClosed(VambraceTestCase):
 
     def test_unknown_key(self):
         ghost = uuid7.new_uuid7()  # well-formed, but never created here
-        self.assertFalse(os.path.exists(os.path.join(self.armories, ghost + ".db")))
+        self.assertFalse(os.path.exists(os.path.join(self.armory, ghost + ".db")))
         self.expect_routed_error("unknown_vambrace", "chain_put",
                                  {"vambrace": ghost})
 
@@ -149,14 +149,14 @@ class FailClosed(VambraceTestCase):
         # an unknown verb without a key fails at routing, not with not_found
         self.expect_routed_error("missing_vambrace", "definitely_not_a_verb", {})
         # with a valid key, routing passes and the verb layer rejects
-        key = self.make_armory()
+        key = self.make_vambrace()
         self.expect_routed_error("not_found", "definitely_not_a_verb",
                                  {"vambrace": key})
 
 
 class RoutedSuccess(VambraceTestCase):
     def test_chain_put_and_get_round_trip(self):
-        key = self.make_armory()
+        key = self.make_vambrace()
         payload, is_error = self.routed("chain_put",
                                         {"vambrace": key, "name": "The Forge"})
         self.assertFalse(is_error, "chain_put failed: %r" % payload)
@@ -167,11 +167,11 @@ class RoutedSuccess(VambraceTestCase):
         self.assertEqual(payload["name"], "The Forge")
 
     def test_verb_layer_never_sees_the_key(self):
-        # after a routed call, the verb layer works on the same armory file
+        # after a routed call, the verb layer works on the same vambrace file
         # with no key at all — the key is stripped before execute()
-        key = self.make_armory()
+        key = self.make_vambrace()
         self.routed("chain_put", {"vambrace": key, "name": "Routed"})
-        conn = db.connect(os.path.join(self.armories, key + ".db"))
+        conn = db.connect(os.path.join(self.armory, key + ".db"))
         try:
             payload = execute(conn, "chain_put", {"name": "No Key"})
             self.assertEqual(payload["name"], "No Key")
@@ -179,7 +179,7 @@ class RoutedSuccess(VambraceTestCase):
             conn.close()
 
     def test_batch_routes_via_single_top_level_key(self):
-        key = self.make_armory()
+        key = self.make_vambrace()
         payload, is_error = self.routed("batch", {
             "vambrace": key,
             "ops": [
@@ -196,13 +196,13 @@ class RoutedSuccess(VambraceTestCase):
         self.assertFalse(is_error)
         self.assertEqual(payload["count"], 2)
 
-    def test_armories_are_independent(self):
-        a, b = self.make_armory(), self.make_armory()
+    def test_vambraces_are_independent(self):
+        a, b = self.make_vambrace(), self.make_vambrace()
         payload, is_error = self.routed("chain_put",
                                         {"vambrace": a, "name": "OnlyInA"})
         self.assertFalse(is_error)
         cid = payload["id"]
-        # the chain is visible in its own armory...
+        # the chain is visible in its own vambrace...
         payload, is_error = self.routed("list", {"vambrace": a, "space": "chain"})
         self.assertFalse(is_error)
         self.assertEqual(payload["count"], 1)
@@ -212,11 +212,11 @@ class RoutedSuccess(VambraceTestCase):
         self.assertEqual(payload["count"], 0)
         self.expect_routed_error("not_found", "get", {"vambrace": b, "id": cid})
 
-    def test_bootstrap_self_heals_hand_touched_armory_file(self):
-        # an armory file lacking the schema (hand-touched) is bootstrapped on
+    def test_bootstrap_self_heals_hand_touched_vambrace_file(self):
+        # a vambrace file lacking the schema (hand-touched) is bootstrapped on
         # the next routed call — bootstrap is idempotent
         key = uuid7.new_uuid7()
-        conn = sqlite3.connect(os.path.join(self.armories, key + ".db"))
+        conn = sqlite3.connect(os.path.join(self.armory, key + ".db"))
         conn.execute("CREATE TABLE stray (x INTEGER)")
         conn.commit()
         conn.close()

@@ -4,11 +4,11 @@ A register (autoexport_registers row) names a *stack* — the root plus its
 descendants over intention -> chain -> blade only — and a destination file +
 format. The server's post-commit hook compares the current stack signature
 against the stored last_sig; on change it spawns a detached exporter child
-(``python -m qatena.autoexport <armory> <root> <path> <format>``) that
+(``python -m qatena.autoexport <vambrace> <root> <path> <format>``) that
 re-reads committed truth and atomically rewrites the file (SPEC 3.18).
 
 The child always exports the latest committed state — no data passes over
-IPC. It opens the armory READ-ONLY, renders to a temp file, os.replace()s it
+IPC. It opens the vambrace READ-ONLY, renders to a temp file, os.replace()s it
 into place, then runs exactly one small read-write transaction (store
 last_sig/last_emitted + mint the export log row). A failed export leaves
 last_sig stale, so the next changed write re-triggers: self-healing with no
@@ -390,9 +390,9 @@ def render(payload, emit_format, exported_at):
 
 # -------------------------------------------------------------- export flow
 
-def open_readonly(armory_path):
-    """Open an armory file read-only (URI mode=ro); the child never writes reads."""
-    path = os.path.abspath(armory_path)
+def open_readonly(vambrace_path):
+    """Open a vambrace file read-only (URI mode=ro); the child never writes reads."""
+    path = os.path.abspath(vambrace_path)
     if os.name == "nt":
         # forward slashes keep the URI parse unambiguous on Windows
         path = path.replace("\\", "/")
@@ -409,7 +409,7 @@ def write_export(conn, root_uuid, emit_path, emit_format, fidelity):
     The one-shot path (the vambrace ``export`` action): takes an OPEN
     read-only connection, computes the stack, renders, and writes the file
     with the same temp + os.replace mechanism as ``export``. No database
-    writes happen here at all -- the armory is never mutated.
+    writes happen here at all -- the vambrace is never mutated.
 
     Returns ``(exported_at, counts)`` (counts = the payload's
     ``{"chains", "blades", "reblades"}`` dict) or ``None`` if the stack does
@@ -435,7 +435,7 @@ def write_export(conn, root_uuid, emit_path, emit_format, fidelity):
     return exported_at, payload["counts"]
 
 
-def export(armory_path, root_uuid, emit_path, emit_format):
+def export(vambrace_path, root_uuid, emit_path, emit_format):
     """Run one full export. Raises on failure — the caller self-heals.
 
     0. re-read this register's own row (root_uuid, emit_path) from the
@@ -456,7 +456,7 @@ def export(armory_path, root_uuid, emit_path, emit_format):
         raise ValueError(
             f"unknown emit format {emit_format!r} (allowed: {list(ALLOWED_FORMATS)})"
         )
-    ro = open_readonly(armory_path)
+    ro = open_readonly(vambrace_path)
     try:
         reg = ro.execute(
             "SELECT reblade_fidelity FROM autoexport_registers "
@@ -487,7 +487,7 @@ def export(armory_path, root_uuid, emit_path, emit_format):
     now = db.now_ns()
 
     # exactly one small read-write transaction (SPEC 3.18)
-    conn = db.connect(armory_path)
+    conn = db.connect(vambrace_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -527,7 +527,7 @@ def export(armory_path, root_uuid, emit_path, emit_format):
     return {"exported_at": exported_at, "sig": sig, "log_id": log_id}
 
 
-def spawn_exporter(armory_path, root_uuid, emit_path, emit_format):
+def spawn_exporter(vambrace_path, root_uuid, emit_path, emit_format):
     """Detach the exporter child; the server does nothing but spawn.
 
     CREATE_NO_WINDOW + devnull streams: no console flash, no output
@@ -535,7 +535,7 @@ def spawn_exporter(armory_path, root_uuid, emit_path, emit_format):
     """
     cmd = [
         sys.executable, "-m", "qatena.autoexport",
-        armory_path, root_uuid, emit_path, emit_format,
+        vambrace_path, root_uuid, emit_path, emit_format,
     ]
     kwargs = {
         "stdin": subprocess.DEVNULL,
@@ -550,18 +550,18 @@ def spawn_exporter(armory_path, root_uuid, emit_path, emit_format):
 # ------------------------------------------------------------- child entry
 
 def main(argv=None):
-    """Child entrypoint: `python -m qatena.autoexport <armory> <root> <path> <fmt>`."""
+    """Child entrypoint: `python -m qatena.autoexport <vambrace> <root> <path> <fmt>`."""
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) != 4:
         print(
-            "usage: python -m qatena.autoexport <armory_path> <root_uuid> "
+            "usage: python -m qatena.autoexport <vambrace_path> <root_uuid> "
             "<emit_path> <emit_format>",
             file=sys.stderr,
         )
         return 2
-    armory_path, root_uuid, emit_path, emit_format = argv
+    vambrace_path, root_uuid, emit_path, emit_format = argv
     try:
-        export(armory_path, root_uuid, emit_path, emit_format)
+        export(vambrace_path, root_uuid, emit_path, emit_format)
     except Exception as e:  # failure is self-healing: stale sig re-triggers later
         print(f"qatena.autoexport: export failed: {e!r}", file=sys.stderr)
         return 1

@@ -56,7 +56,7 @@ class Uuid7(QatenaTestCase):
 
 class OpenItemsFreeform(QatenaTestCase):
     """open_items freeform tracking columns (SPEC non-core DDL + bootstrap
-    migration for pre-freeform armories)."""
+    migration for pre-freeform vambraces)."""
 
     FREEFORM = (
         ("freeform_current", "INTEGER"),
@@ -83,7 +83,7 @@ class OpenItemsFreeform(QatenaTestCase):
         return {r["name"]: r["type"] for r in conn.execute(
             "PRAGMA table_info(open_items)")}
 
-    def test_fresh_armory_freeform_columns(self):
+    def test_fresh_vambrace_freeform_columns(self):
         cols = self._columns(self.conn)
         for name, decl in self.FREEFORM:
             self.assertEqual(cols.get(name), decl)

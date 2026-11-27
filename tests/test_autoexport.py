@@ -3,7 +3,7 @@ re-export, cascade, renderer snapshots. All data synthetic.
 
 Two drivers:
   * AutoexportTests — in-process: the real server handlers
-    (``server._call_vambrace`` / ``server._call_routed``) against a real armory
+    (``server._call_vambrace`` / ``server._call_routed``) against a real vambrace
     file, with QATENA_EXPORT_SYNC=1 (test seam) so the post-commit hook runs
     the exporter inline and files are deterministic.
   * AutoexportServerTests — the real stdio server (spawned), same env seam,
@@ -33,7 +33,7 @@ from helpers import ISO_RE, QatenaTestCase, REPO_ROOT, UUID7_RE
 class AutoexportTests(QatenaTestCase):
     def setUp(self):
         super().setUp()
-        # a proper armory file (<key>.db) so the server's key validation passes
+        # a proper vambrace file (<key>.db) so the server's key validation passes
         self.conn.close()
         payload, is_err = server._call_vambrace(self._tmp, {"action": "equip"})
         self.assertFalse(is_err, payload)
@@ -847,7 +847,7 @@ class AutoexportServerTests(unittest.TestCase):
     DEADLINE = 20
 
     def setUp(self):
-        self._armories = tempfile.mkdtemp(prefix="qatena-ae-armories-")
+        self._armory = tempfile.mkdtemp(prefix="qatena-ae-armories-")
         self._outdir = tempfile.mkdtemp(prefix="qatena-ae-out-")
         self._proc, self._lines = self._spawn()
         self._next_id = 0
@@ -862,14 +862,14 @@ class AutoexportServerTests(unittest.TestCase):
                 self._proc.wait(timeout=5)
             except Exception:
                 pass
-        shutil.rmtree(self._armories, ignore_errors=True)
+        shutil.rmtree(self._armory, ignore_errors=True)
         shutil.rmtree(self._outdir, ignore_errors=True)
 
     def _spawn(self):
         env = dict(os.environ)
         env.pop("QATENA_DB", None)
         env["PYTHONPATH"] = REPO_ROOT
-        env["QATENA_ARMORY"] = self._armories
+        env["QATENA_ARMORY"] = self._armory
         env["QATENA_EXPORT_SYNC"] = "1"  # test seam: deterministic inline export
         env["PYTHONIOENCODING"] = "utf-8"
         proc = subprocess.Popen(
@@ -928,7 +928,7 @@ class AutoexportServerTests(unittest.TestCase):
         self.assertTrue(result["isError"], "expected isError: %r" % result)
         return json.loads(result["content"][0]["text"])["error"]["code"]
 
-    def _create_armories(self):
+    def _create_vambrace(self):
         body = self._body(self._call_tool("vambrace", {"action": "equip"}))
         key = body["vambrace"]
         self.assertRegex(key, UUID7_RE)
@@ -957,7 +957,7 @@ class AutoexportServerTests(unittest.TestCase):
         self.assertNotIn("vambrace", t["inputSchema"]["required"])
 
     def test_register_reexport_deregister_over_stdio(self):
-        key = self._create_armories()
+        key = self._create_vambrace()
         cid = self._body(
             self._call_tool("chain_put", {"vambrace": key, "name": "Forge"}))["id"]
         self._body(self._call_tool(

@@ -33,19 +33,19 @@ Themed after a chain weapon system in the project that prompted this design. The
 
 A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls.
 
-## Multi-armory routing
+## Multi-vambrace routing
 
-One server process, many armories: each project gets its own Qatena database file. The 18th verb,
+One server process, many vambraces: each project gets its own Qatena database file. The 18th verb,
 `vambrace` (`action: "equip"`), mints a UUIDv7, instantiates `<key>.db` in the armory dir
-(env `QATENA_ARMORY`, default `./.qatena`), bootstraps its schema, and returns that UUIDv7 as
-the armory's **routing key** — every other verb call carries that key in a required `vambrace`
+(env `QATENA_ARMORY`, default `./.qatena`), bootstraps its schema, and returns that UUIDv7 as the
+vambrace's **key** — every other verb call carries that key in a required `vambrace`
 argument, and the server routes the call to the right file.
 
 Routing state is the files themselves — an existence check in the armory dir — so there is no
 registry to persist and routing survives server restarts. The key rules:
 
 - **Strict vambrace-or-nothing** — every call is routed by an explicit key.
-- **No default armory, ever** — a default would let an un-oriented agent land in the wrong
+- **No default vambrace, ever** — a default would let an un-oriented agent land in the wrong
   project's data.
 - **Fail closed** — missing key → `missing_vambrace`; malformed key → `malformed_vambrace`;
   well-formed key with no file → `unknown_vambrace`. The server never silently creates or
@@ -62,7 +62,7 @@ stays fast: change identification stays in the server process, file writing in t
 process.
 
 **One-shot export.** The `export` vambrace action renders a stack to a file immediately
-without any register machinery: read-only against the armory, no register row, no log, no
+without any register machinery: read-only against the vambrace, no register row, no log, no
 stored signature (SPEC 3.18) — same render, same reblade layer, no bookkeeping.
 
 **Why signature-diff** (rather than extending the per-write transaction footprint): the
@@ -81,7 +81,7 @@ combinatorial in any mode. The mode is signed into the stack signature, so chang
 re-exports, and a reblade write re-exports exactly the registers whose mode includes the
 row's direction.
 
-The exporter child opens the armory read-only and then does exactly one small read-write
+The exporter child opens the vambrace read-only and then does exactly one small read-write
 transaction (store `last_sig`/`last_emitted` + mint the export log row) — the one sanctioned
 exception to the server-as-sole-write-surface rule. A failed export leaves the signature
 stale, so the next changed write re-triggers: self-healing with no queue or retry
@@ -138,13 +138,13 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 ## Verb surface (18 tools)
 
 **Armory**
-- `vambrace` — `action: "equip"` mints a UUIDv7 and instantiates an empty armory; the returned
-  UUIDv7 is the routing key required on every other verb (multi-armory routing, above).
+- `vambrace` — `action: "equip"` mints a UUIDv7 and instantiates an empty vambrace; the returned
+  UUIDv7 is its key, required on every other verb (multi-vambrace routing, above).
   `action: "register_autoexport"` / `"deregister_autoexport"` / `"export"` are key-bearing
-  armory actions: register a stack (intention/chain/blade root) for automatic sig-gated export
+  vambrace actions: register a stack (intention/chain/blade root) for automatic sig-gated export
   to a file (Autoexport, above; optional `reblade_fidelity` selects the reblade layer
   carried, default `out`), remove the register, or run a one-shot `export` — immediate
-  file write, read-only against the armory (no register row, no log, no stored signature;
+  file write, read-only against the vambrace (no register row, no log, no stored signature;
   Autoexport, above)
 
 **Chain writes**

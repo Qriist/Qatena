@@ -4,8 +4,8 @@
 Resolutions the design left rough are marked **[resolution]** — the set of those is pending review.
 
 **Runtime:** Python 3, stdlib `sqlite3`, a single stdio MCP server process (goose extension).
-One database file per armory, created and owned by the server (§1.9, §3.18). The server is the **sole write
-surface**: no other process or tool may open any armory file for writes — the one sanctioned exception is
+One database file per vambrace, created and owned by the server (§1.9, §3.18). The server is the **sole write
+surface**: no other process or tool may open any vambrace file for writes — the one sanctioned exception is
 the autoexport exporter child's single small per-export transaction (§3.18).
 
 ## 1. Conventions
@@ -97,22 +97,22 @@ part of v1 (see §5).
 - Auto-log (§1.5) and auto-linking (§1.6) are part of the write transaction, not afterthoughts.
 - `logs` is append-only: no verb updates or deletes a log row or its `log_refs`.
 
-### 1.9 Vambrace routing (multi-armory)
+### 1.9 Vambrace routing (multi-vambrace)
 
-- Every entity lives in an **armory** — one Qatena database file. The armory dir comes from the
+- Every entity lives in a **vambrace** — one Qatena database file. The armory dir comes from the
   `QATENA_ARMORY` environment variable (default `./.qatena`); the server creates it at startup.
-  An armory file is `<armory_dir>/<key>.db`.
-- An armory is created only by the `vambrace` verb, `action: "equip"` (§3.18): it mints a UUIDv7,
+  A vambrace file is `<armory_dir>/<key>.db`.
+- A vambrace is created only by the `vambrace` verb, `action: "equip"` (§3.18): it mints a UUIDv7,
   instantiates `<key>.db`, bootstraps its schema, and returns exactly
-  `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the armory's **routing key**.
+  `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vambrace's **key** (its routing identity).
 - Every other verb takes a **required** `vambrace` argument = the routing key. Key format:
   36-char lowercase hyphenated, version nibble 7 —
   `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`.
-- **Fail closed; no default armory, ever.** Missing key → `missing_vambrace`; malformed key →
+- **Fail closed; no default vambrace, ever.** Missing key → `missing_vambrace`; malformed key →
   `malformed_vambrace`; well-formed key with no file in the armory dir → `unknown_vambrace`.
-  The server never silently creates an armory or falls back to another.
+  The server never silently creates a vambrace or falls back to another.
 - Routing state is the files themselves — a scan / existence check in the armory dir. No in-memory
-  registry: routing survives server restart. Each call opens a fresh connection to its armory.
+  registry: routing survives server restart. Each call opens a fresh connection to its vambrace.
 - `QATENA_DB` (the old single-database env var, default `./.qatena/qatena.db`) is **retired** —
   replaced by `QATENA_ARMORY`.
 
@@ -329,7 +329,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Chain uuid. Takes precedence over name." },
       "name": { "type": "string", "minLength": 1, "description": "Chain name (alias). Unique within the chain space, case-insensitive." },
       "intentions": {
@@ -360,7 +360,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "name": { "type": "string", "minLength": 1 }
     },
@@ -379,7 +379,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "source": { "type": "string", "description": "Source chain id or name." },
       "blades": {
         "type": "array",
@@ -415,7 +415,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "into": { "type": "string", "description": "Surviving chain id or name." },
       "fold": { "type": "string", "description": "Chain to dissolve (id or name)." }
     },
@@ -433,7 +433,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "chain": { "type": "string", "description": "Target chain id or name." },
       "text": { "type": "string", "minLength": 1 },
       "index": { "type": "integer", "minimum": 0, "description": "0-based position; omitted = append. Must be <= current blade count." }
@@ -452,7 +452,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
       "text": { "type": "string", "minLength": 1 }
     },
@@ -470,7 +470,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
       "to_chain": { "type": "string", "description": "Destination chain id or name; omitted = same chain." },
       "index": { "type": "integer", "minimum": 0, "description": "0-based destination position, measured after removal; omitted = end." }
@@ -489,7 +489,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." }
     },
     "required": ["vambrace", "id"]
@@ -506,7 +506,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "ops": {
         "type": "array",
         "minItems": 1,
@@ -534,7 +534,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] },
@@ -554,7 +554,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
@@ -573,7 +573,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
     },
     "required": ["vambrace", "id"]
@@ -590,7 +590,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "probes": {
         "type": "array",
         "items": { "type": "string", "minLength": 1 },
@@ -619,7 +619,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "space": { "type": "string", "enum": ["chain", "intention", "open_item", "ruling", "term", "log"] },
       "filter": {
         "type": "object",
@@ -651,7 +651,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "direction": { "type": "string", "enum": ["in", "out", "both"], "description": "Default both." },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
@@ -670,7 +670,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "from": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "direction": { "type": "string", "enum": ["out", "in", "both"], "description": "Default out." },
       "kinds": {
@@ -695,7 +695,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "limit": { "type": "integer", "minimum": 1, "description": "Default 20." }
     },
@@ -706,13 +706,13 @@ change. Renames and refiling are just this.
 
 ### 3.18 `vambrace`
 
-Create and route armories. `action: "equip"` mints a UUIDv7, instantiates an empty Qatena database
+Create and route vambraces. `action: "equip"` mints a UUIDv7, instantiates an empty Qatena database
 file named `<UUIDv7>.db` in the armory dir, bootstraps its schema, and returns exactly
-`{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the armory's routing key, the required `vambrace`
+`{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vambrace's key, the required `vambrace`
 argument of every other verb. `equip` is the only key-less action.
 
 `register_autoexport`, `deregister_autoexport`, and `export` are **key-bearing** actions: alongside
-`action` they take the armory's routing key as the `vambrace` argument, validated fail-closed
+`action` they take the vambrace's key as the `vambrace` argument, validated fail-closed
 exactly like a routed verb (§1.9 — `missing_vambrace` / `malformed_vambrace` /
 `unknown_vambrace`), plus the fields below. Any other action fails with `unsupported_action`.
 
@@ -731,7 +731,7 @@ deregister actions themselves are excluded). For each active register the server
 **reblade layer**: `(root uuid, root space, root name, fidelity mode)` + per chain `(uuid,
 name, sorted intention names, [(blade uuid, text)] in pos order)` + the sorted reblade rows —
 against the stored `last_sig`. On change, the exporter
-child (`python -m qatena.autoexport <armory> <root> <path> <format>`) is spawned detached; it
+child (`python -m qatena.autoexport <vambrace> <root> <path> <format>`) is spawned detached; it
 re-reads committed truth, renders the format, and atomically rewrites the file. Timestamps,
 logs, and intention orientation are excluded, so no-op upserts do not re-export — but a chain
 refiled into / out of a registered intention does (membership is content), and the chain's own
@@ -793,7 +793,7 @@ never deletes user files.
 
 `export` (key-bearing): one-shot export — the same fields as `register_autoexport`
 (`root`, `emit_path`, `emit_format`, optional `reblade_fidelity`), executed immediately with
-**no armory mutation**: the armory opens **read-only**, and no register row, log row, `log_refs`,
+**no vambrace mutation**: the vambrace opens **read-only**, and no register row, log row, `log_refs`,
 or stored signature is written. `reblade_fidelity` here is the explicit reblade layer for this
 one render (default `out`) — there is **no presence-masking**: the register row is never
 consulted. The file lands via the same atomic mechanism as the exporter child (shared
@@ -808,25 +808,25 @@ sqlite → `db_error`.
 the stack signature actually changed. Self-healing: any failed export (disk full, path lost,
 crash) leaves `last_sig` stale, so the next changed write re-triggers automatically — no queue,
 no retry bookkeeping. The exporter child is the one sanctioned exception to the sole-write
-surface: it opens the armory **read-only** (first re-reading its own register row — absent,
+surface: it opens the vambrace **read-only** (first re-reading its own register row — absent,
 i.e. deregistered in flight, is a clean no-op: no file write, no log), then does exactly one
 small read-write transaction (store `last_sig` / `last_emitted`, mint the export log row —
 area `autoexport`, title `autoexport <root-space> <root-uuid> -> <emit_path>`, root ref op
 `referenced`). Cascade: deleting a registered root (`chain_delete` / `blade_delete`) deletes
 its register rows in the same transaction — a dead root can never re-trigger, and UUIDs are
-never reused. Pre-existing armories (bootstrapped before `reblade_fidelity`) are migrated in
+never reused. Pre-existing vambraces (bootstrapped before `reblade_fidelity`) are migrated in
 place by `schema.bootstrap` on next open: the column is added with default `out`,
 idempotently.
 
 ```json
 {
   "name": "vambrace",
-  "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the armory's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing armory actions: alongside 'action' they take the armory's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the armory (no register row, no log, no stored signature). See SPEC 3.18.",
+  "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the vambrace (no register row, no log, no stored signature). See SPEC 3.18.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "action": { "type": "string", "enum": ["equip", "register_autoexport", "deregister_autoexport", "export"], "description": "equip: key-less — mints a new armory. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the armory routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the armory (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)." },
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the armory's routing key (returned by action=equip). Not used by equip." },
+      "action": { "type": "string", "enum": ["equip", "register_autoexport", "deregister_autoexport", "export"], "description": "equip: key-less — mints a new vambrace. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the vambrace (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the vambrace's key (returned by action=equip). Not used by equip." },
       "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE intention, chain, or blade (register / export); the registered root (deregister). Not used by equip." },
       "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by equip." },
       "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister." },
@@ -843,7 +843,7 @@ there — and it is validated fail-closed exactly like every routed verb.
 
 ## 4. Migration notes (source → Qatena)
 
-- Migration output lands in an armory created by the `vambrace` verb (`action: "equip"`); there is
+- Migration output lands in a vambrace created by the `vambrace` verb (`action: "equip"`); there is
   no separate migration database path, and `QATENA_DB` is retired (§1.9).
 - Source pins → `chain_headers` (+ blades from split points; migration script's problem, not the schema's).
 - Source `pins` prose references → `reblades` rows (`name-ref` for bare mentions; `source` /

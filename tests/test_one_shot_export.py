@@ -2,7 +2,7 @@
 
 Unlike register_autoexport, export performs NO database mutations: no
 register row, no log row, no log_refs, no stored signature. The real
-server handlers drive a real armory file (same in-process pattern as
+server handlers drive a real vambrace file (same in-process pattern as
 test_autoexport.py); QATENA_EXPORT_SYNC=1 is set so the sig-gated
 register re-export path in one test also runs inline and deterministically.
 """
@@ -18,7 +18,7 @@ from helpers import ISO_RE, QatenaTestCase
 class OneShotExportTests(QatenaTestCase):
     def setUp(self):
         super().setUp()
-        # a proper armory file (<key>.db) so the server's key validation passes
+        # a proper vambrace file (<key>.db) so the server's key validation passes
         self.conn.close()
         payload, is_err = server._call_vambrace(self._tmp, {"action": "equip"})
         self.assertFalse(is_err, payload)

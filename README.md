@@ -6,9 +6,9 @@ SQLite-based note storage for local AI agents, tailored to complex personal proj
 Durable, bulletizable, pointerable, and malleable note storage for local AI agents:
 notes (**chains**) decompose into individually addressable units (**blades**),
 cross-references (**reblades**) are first-class and traversable, and structure can be
-split, merged, and refiled without breaking references. It is a set of SQLite databases (one **armory** per project)
+split, merged, and refiled without breaking references. It is a set of SQLite databases (one **vambrace** per project)
 behind a stdio MCP server that exposes a small, composite, batch-capable verb surface —
-one logical operation per call — with every invariant enforced server-side. Every call is routed by a **vambrace** key (the armory's UUIDv7) to its project's armory; armories are created with the `vambrace` verb.
+one logical operation per call — with every invariant enforced server-side. Every call is routed by a **vambrace** key (a vambrace's UUIDv7 identity) to its project's vambrace; vambraces are created with the `vambrace` verb.
 
 ## Repo layout
 
@@ -27,7 +27,7 @@ python -m qatena
 ```
 
 The armory dir comes from the `QATENA_ARMORY` environment variable (default `./.qatena`);
-the directory is auto-created at start, and each armory is a file `<key>.db` inside it,
+the directory is auto-created at start, and each vambrace is a file `<key>.db` inside it,
 created by the `vambrace` verb. The server speaks newline-delimited JSON-RPC 2.0 (MCP) on stdin/stdout until
 stdin closes; all diagnostics go to stderr, never stdout.
 

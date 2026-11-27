@@ -2,8 +2,8 @@
 
 Transport: newline-delimited JSON (one JSON-RPC 2.0 object per line, UTF-8).
 Nothing but MCP messages goes to stdout; all diagnostics go to stderr.
-Multi-armory: every non-vambrace call routes to an armory file via its
-``vambrace`` key; the ``vambrace`` verb creates armories. Serial message loop
+Multi-vambrace: every non-vambrace call routes to a vambrace file via its
+``vambrace`` key; the ``vambrace`` verb creates vambraces. Serial message loop
 until stdin EOF; ``serve(armory_dir) -> 0``.
 """
 
@@ -27,7 +27,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -78,7 +78,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -104,7 +104,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "source": {
                     "type": "string",
@@ -163,7 +163,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "into": {
                     "type": "string",
@@ -190,7 +190,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "chain": {
                     "type": "string",
@@ -222,7 +222,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -250,7 +250,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -282,7 +282,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -305,7 +305,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "ops": {
                     "type": "array",
@@ -355,7 +355,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "src": {
                     "type": "string",
@@ -396,7 +396,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "src": {
                     "type": "string",
@@ -434,7 +434,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -456,7 +456,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "probes": {
                     "type": "array",
@@ -509,7 +509,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "space": {
                     "type": "string",
@@ -585,7 +585,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -626,7 +626,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "from": {
                     "type": "string",
@@ -680,7 +680,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
                 },
                 "id": {
                     "type": "string",
@@ -700,7 +700,7 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the armory's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing armory actions: alongside 'action' they take the armory's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the armory (no register row, no log, no stored signature). See SPEC 3.18.",
+        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the vambrace (no register row, no log, no stored signature). See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -712,12 +712,12 @@ TOOLS = [
                         "deregister_autoexport",
                         "export"
                     ],
-                    "description": "equip: key-less — mints a new armory. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the armory routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the armory (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)."
+                    "description": "equip: key-less — mints a new vambrace. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the vambrace (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)."
                 },
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For register_autoexport / deregister_autoexport / export: the armory's routing key (returned by action=equip). Not used by equip."
+                    "description": "For register_autoexport / deregister_autoexport / export: the vambrace's key (returned by action=equip). Not used by equip."
                 },
                 "root": {
                     "type": "string",
@@ -786,9 +786,9 @@ def _call_vambrace(armory_dir, arguments):
 
     ``equip`` is the only key-less action. ``register_autoexport``,
     ``deregister_autoexport``, and ``export`` are KEY-BEARING: they take the
-    armory routing key in ``vambrace`` and are validated fail-closed exactly
+    the vambrace's key in ``vambrace`` and are validated fail-closed exactly
     like a routed verb. ``export`` is one-shot: it renders and writes a
-    stack file immediately, read-only against the armory (no register row,
+    stack file immediately, read-only against the vambrace (no register row,
     no log row, no stored signature).
     """
     action = arguments.get("action")
@@ -814,10 +814,10 @@ def _call_vambrace(armory_dir, arguments):
 
 def _validate_routing_key(key, armory_dir):
     """Shared fail-closed key check: routed verbs and key-bearing vambrace
-    actions (SPEC 1.9). Returns (vault_path, None) or (None, (payload, True))."""
+    actions (SPEC 1.9). Returns (path, None) or (None, (payload, True))."""
     if not isinstance(key, str) or not key:
         return None, (_tool_error("missing_vambrace",
-                                  "vambrace routing key is required — create an armory with the "
+                                  "vambrace routing key is required — create a vambrace with the "
                                   "vambrace verb (action=equip) first"), True)
     if not _VAMBRACE_KEY_RE.match(key):
         return None, (_tool_error("malformed_vambrace",
@@ -825,7 +825,7 @@ def _validate_routing_key(key, armory_dir):
     path = os.path.join(armory_dir, key + ".db")
     if not os.path.exists(path):
         return None, (_tool_error("unknown_vambrace",
-                                  f"unknown vambrace '{key}': no such armory (create one with the vambrace verb)"), True)
+                                  f"unknown vambrace '{key}': no such vambrace (create one with the vambrace verb)"), True)
     return path, None
 
 
@@ -1043,9 +1043,9 @@ def _call_export(armory_dir, arguments):
 
     Mirrors the register_autoexport validation chain, then renders and
     writes the stack file immediately. Deliberately read-only against the
-    armory: no register row, no log row, no log_refs, no stored signature --
+    vambrace: no register row, no log row, no log_refs, no stored signature --
     and so no schema.bootstrap on this path (the key check above already
-    guarantees the armory file exists).
+    guarantees the vambrace file exists).
     """
     path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
     if err is not None:
@@ -1115,13 +1115,13 @@ def _call_export(armory_dir, arguments):
 
 
 def _call_routed(armory_dir, name, arguments):
-    """Route a non-vambrace call to its armory; fail closed, no default (SPEC 1.9)."""
+    """Route a non-vambrace call to its vambrace; fail closed, no default (SPEC 1.9)."""
     path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
     if err is not None:
         return err
     conn = db.connect(path)
     try:
-        schema.bootstrap(conn)  # idempotent: keeps a hand-touched armory file self-healing
+        schema.bootstrap(conn)  # idempotent: keeps a hand-touched vambrace file self-healing
         try:
             # the verb layer never sees the routing key
             args = {k: v for k, v in arguments.items() if k != "vambrace"}
@@ -1235,7 +1235,7 @@ def _handle(armory_dir, msg):
 def serve(armory_dir: str) -> int:
     """Serial MCP stdio loop until stdin EOF. Returns 0.
 
-    armory_dir: directory holding the armory files (<key>.db). The server keeps
+    armory_dir: directory holding the vambrace files (<key>.db). The server keeps
     no routing state — routing is the files themselves, so it survives restart.
     """
     for stream in (sys.stdin, sys.stdout):

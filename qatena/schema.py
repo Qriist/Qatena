@@ -126,7 +126,7 @@ STATEMENTS = [
 
 
 def _migrate_autoexport_registers(conn):
-    """Idempotent migration for armories bootstrapped before reblade_fidelity
+    """Idempotent migration for vambraces bootstrapped before reblade_fidelity
     existed: the table above was created without the column, so add it.
     SQLite allows ADD COLUMN with NOT NULL when the default is a constant."""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(autoexport_registers)")}
@@ -138,10 +138,10 @@ def _migrate_autoexport_registers(conn):
 
 
 def _migrate_open_items_freeform(conn):
-    """Idempotent migration for armories bootstrapped before the seven
+    """Idempotent migration for vambraces bootstrapped before the seven
     freeform tracking columns existed: add any missing one to open_items
     (guarded per column, so a db missing any or all seven migrates safely).
-    Fresh armories get all seven from the DDL above, so this no-ops there."""
+    Fresh vambraces get all seven from the DDL above, so this no-ops there."""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(open_items)")}
     for name, decl in (
         ("freeform_current", "INTEGER DEFAULT NULL"),
@@ -157,12 +157,12 @@ def _migrate_open_items_freeform(conn):
 
 
 def _migrate_terminology(conn):
-    """Idempotent terminology-tightening migration for pre-existing armories
+    """Idempotent terminology-tightening migration for pre-existing vambraces
     (the 2026-11-27 rename: intention/reblade/armory vocabulary).
 
     Renames the four tables (dropping their old-named indexes), renames the
     two affected columns, and carries the stored values along (register
-    root_space, log areas). Each step is guarded, so fresh armories (the DDL
+    root_space, log areas). Each step is guarded, so fresh vambraces (the DDL
     in STATEMENTS already carries the new names) and already-migrated ones
     no-op. Table/column identifiers are static code constants; no
     user-supplied value ever reaches the SQL text.
@@ -209,7 +209,7 @@ def _migrate_terminology(conn):
 def bootstrap(conn):
     """Create the full schema on a fresh DB; no-op on an existing one.
 
-    Idempotent: safe to run on every server start. Pre-existing armories are
+    Idempotent: safe to run on every server start. Pre-existing vambraces are
     migrated in place (terminology rename first, then autoexport_registers
     gains reblade_fidelity if it predates that column too, then open_items
     gains the seven freeform tracking columns if it predates any of them).
