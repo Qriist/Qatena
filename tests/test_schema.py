@@ -143,3 +143,29 @@ class OpenItemsFreeform(QatenaTestCase):
         schema.bootstrap(con)  # second run: idempotent, no error
         self.assertEqual(self._columns(con), cols)
         con.close()
+
+
+class OpenItemBodyOptional(QatenaTestCase):
+    """The open item body (text) is OPTIONAL (SPEC freeform note, user-directed):
+    a pure tracking row (name + state + freeform fields, no body) is a legitimate
+    shape, so a single incremental freeform update never has to re-supply a
+    massive body that tracks a single number."""
+
+    def test_text_column_is_nullable(self):
+        cols = {r["name"]: r["notnull"] for r in self.conn.execute(
+            "PRAGMA table_info(open_items)")}
+        self.assertEqual(cols["text"], 0)
+
+    def test_bodyless_item_round_trips(self):
+        oid = self.insert_open_item("Counter", text=None)
+        # The use case: one incremental freeform update, no body involved.
+        self.conn.execute("UPDATE open_items SET freeform_current=? WHERE id=?", (7, oid))
+        self.conn.commit()
+        got = self.verb("get", id=oid)
+        self.assertEqual(got["name"], "Counter")
+        self.assertIsNone(got["text"])
+        self.assertEqual(got["freeform_current"], 7)
+        rec = [r for r in self.verb("list", space="open_item")["items"] if r["id"] == oid][0]
+        self.assertIsNone(rec["text"])
+        hits = [h for h in self.verb("search", probes=["Counter"])["hits"] if h["id"] == oid]
+        self.assertEqual([h["space"] for h in hits], ["open_item"])
