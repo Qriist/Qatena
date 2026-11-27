@@ -4,20 +4,20 @@ SQLite-based note storage for local AI agents, tailored to complex personal crea
 
 ## Goal
 
-Build **durable, bulletizable, pointerable, and malleable** note storage:
+Build **durable, itemizable, addressable, and malleable** note storage:
 
 - **Durable** — SQLite-backed, local-first, crash-safe writes; safe for agents to touch repeatedly.
-- **Bulletizable** — notes decompose into individually addressable units (blades) that can be created, edited, moved, and deleted.
-- **Pointerable** — first-class cross-references between notes and blades that agents can create, follow, and traverse.
+- **Itemizable** — notes decompose into individually addressable units (blades) that can be created, edited, moved, and deleted.
+- **Addressable** — first-class cross-references between notes and blades that agents can create, follow, and traverse.
 - **Malleable** — schema and structure are not frozen; notes can be split, merged, and restructured without migration pain.
 
 ## Terminology
 
 | Term | Meaning |
 |---|---|
+| **intention** | a category; the view layer of the note space (membership is chain-only) |
 | **chain** | the unit of note (the source system's "pin") — a header plus ordered blades plus intention membership |
 | **blade** | an individually addressable unit of a chain's body (the source system's "bullet") |
-| **intention** | a category; the view layer of the note space (membership is chain-only) |
 | **reblade** | a typed, UUID-addressed link between entities |
 
 Themed after a chain weapon system in the project that prompted this design. The relational model (overlapping intentions, first-class blades, UUID reblades) intentionally goes beyond what the old markdown/filesystem system could express.

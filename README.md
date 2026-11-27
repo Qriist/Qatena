@@ -3,7 +3,7 @@ SQLite-based note storage for local AI agents, tailored to complex personal proj
 
 ## What it is
 
-Durable, bulletizable, pointerable, and malleable note storage for local AI agents:
+Durable, itemizable, addressable, and malleable note storage for local AI agents:
 notes (**chains**) decompose into individually addressable units (**blades**),
 cross-references (**reblades**) are first-class and traversable, and structure can be
 split, merged, and refiled without breaking references. It is a set of SQLite databases (one **vambrace** per project)
