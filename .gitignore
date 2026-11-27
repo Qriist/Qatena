@@ -1,6 +1,9 @@
 # Local-only migration/reference material (source DB + Python shims)
 import_reference/
 
+# Scratch space for local experiments and throwaway files
+scratch/
+
 # Python
 __pycache__/
 *.pyc
