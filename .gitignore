@@ -1,0 +1,6 @@
+# Local-only migration/reference material (source DB + Python shims)
+import_reference/
+
+# Python
+__pycache__/
+*.pyc
