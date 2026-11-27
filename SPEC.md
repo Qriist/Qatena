@@ -782,8 +782,8 @@ exactly once (under its `src` owner), never duplicated into the block.
 - Upsert on identity `(root_uuid, emit_path)`: re-registering the same root + path with a
   different format **or** fidelity REPLACES it (`replaced: true` in the response).
 - **Synchronous first export** at registration (the response reports the initial write):
-  `exported: false` + `export_error` on failure — the register row is kept and the export
-  self-heals on the next changed write.
+  `exported: false` + `export_error` on failure — the register row is kept with
+  `last_sig` NULL, so the next write to the vambrace (changed or not) re-exports.
 - Mints one log row (area `autoexport`). Response:
   `{root, root_space, emit_path, emit_format, reblade_fidelity, stack: {chains, blades},
   exported, exported_at (iso), replaced, log_id}`.
