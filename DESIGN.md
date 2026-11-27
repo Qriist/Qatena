@@ -121,6 +121,8 @@ cascade-deletes its registers.
 
 The unified UUID/reblade space dissolves the source system's `ruling_tags` and `open_items.refs` prose-reference columns: those relationships become ordinary reblade rows. Likewise `log_refs` replaces any free-text "affected items" list: logs are queryable by UUID, and the rows are minted by the system from the transaction's own footprint, so they cannot drift.
 
+`open_items` carries five NULL-defaulted freeform tracking columns — `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER) and `freeform_next` / `freeform_last` (TEXT) — for quantity / key-position tracking. The future open_item contract exposes them as five OPTIONAL fields without the `freeform_` prefix (see SPEC open_items note).
+
 ## Reblade semantics
 
 `kind` expresses the reblade's **semantic relationship** — never the endpoint type.

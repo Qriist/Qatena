@@ -1,7 +1,8 @@
 """Schema bootstrap, seeded registers, UUIDv7 format/ordering (SPEC 1.1, 2)."""
+import os
 import time
 
-from qatena import schema
+from qatena import db, schema
 from qatena.uuid7 import new_uuid7
 from helpers import QatenaTestCase, UUID7_RE
 
@@ -51,3 +52,64 @@ class Uuid7(QatenaTestCase):
         time.sleep(0.002)
         b = new_uuid7()
         self.assertLess(a, b)
+
+
+class OpenItemsFreeform(QatenaTestCase):
+    """open_items freeform tracking columns (SPEC non-core DDL + bootstrap
+    migration for pre-freeform armories)."""
+
+    FREEFORM = (
+        ("freeform_current", "INTEGER"),
+        ("freeform_pending", "INTEGER"),
+        ("freeform_total", "INTEGER"),
+        ("freeform_next", "TEXT"),
+        ("freeform_last", "TEXT"),
+    )
+
+    # Pre-change open_items DDL, verbatim from git show HEAD:qatena/schema.py
+    # (HEAD 7227558, before the freeform columns landed).
+    LEGACY_OPEN_ITEMS = """CREATE TABLE open_items (
+  id      TEXT(36) NOT NULL PRIMARY KEY,
+  name    TEXT    NOT NULL UNIQUE COLLATE NOCASE,
+  state   TEXT    NOT NULL REFERENCES open_item_states(name),
+  text    TEXT,
+  created INTEGER NOT NULL,
+  updated INTEGER NOT NULL
+)"""
+
+    def _columns(self, conn):
+        return {r["name"]: r["type"] for r in conn.execute(
+            "PRAGMA table_info(open_items)")}
+
+    def test_fresh_armory_freeform_columns(self):
+        cols = self._columns(self.conn)
+        for name, decl in self.FREEFORM:
+            self.assertEqual(cols.get(name), decl)
+
+    def test_insert_without_freeform_defaults_null(self):
+        self.insert_open_item("Task One")  # helper omits the five columns
+        row = self.conn.execute(
+            "SELECT freeform_current, freeform_pending, freeform_total, "
+            "freeform_next, freeform_last FROM open_items").fetchone()
+        self.assertEqual(tuple(row), (None, None, None, None, None))
+
+    def test_legacy_db_migrates_in_place(self):
+        # A db whose open_items predates the freeform columns: bootstrap
+        # must add all five in place, and a second run must no-op.
+        con = db.connect(os.path.join(self._tmp, "legacy.db"))
+        con.execute(
+            "CREATE TABLE open_item_states (name TEXT NOT NULL PRIMARY KEY)")
+        con.execute(
+            "INSERT INTO open_item_states (name) "
+            "VALUES ('open'), ('shelved'), ('resolved')")
+        con.execute(self.LEGACY_OPEN_ITEMS)
+        self.assertEqual(
+            [c for c in self._columns(con)],
+            ["id", "name", "state", "text", "created", "updated"])
+        schema.bootstrap(con)
+        cols = self._columns(con)
+        for name, decl in self.FREEFORM:
+            self.assertEqual(cols.get(name), decl)
+        schema.bootstrap(con)  # second run: idempotent, no error
+        self.assertEqual(self._columns(con), cols)
+        con.close()

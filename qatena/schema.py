@@ -83,7 +83,12 @@ STATEMENTS = [
   state   TEXT    NOT NULL REFERENCES open_item_states(name),
   text    TEXT,
   created INTEGER NOT NULL,
-  updated INTEGER NOT NULL
+  updated INTEGER NOT NULL,
+  freeform_current INTEGER DEFAULT NULL,
+  freeform_pending INTEGER DEFAULT NULL,
+  freeform_total   INTEGER DEFAULT NULL,
+  freeform_next    TEXT    DEFAULT NULL,
+  freeform_last    TEXT    DEFAULT NULL
 )""",
     """CREATE TABLE IF NOT EXISTS ruling_states (
   name TEXT NOT NULL PRIMARY KEY
@@ -128,6 +133,23 @@ def _migrate_autoexport_registers(conn):
             "ALTER TABLE autoexport_registers "
             "ADD COLUMN reblade_fidelity TEXT NOT NULL DEFAULT 'out'"
         )
+
+
+def _migrate_open_items_freeform(conn):
+    """Idempotent migration for armories bootstrapped before the five
+    freeform tracking columns existed: add any missing one to open_items
+    (guarded per column, so a db missing any or all five migrates safely).
+    Fresh armories get all five from the DDL above, so this no-ops there."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(open_items)")}
+    for name, decl in (
+        ("freeform_current", "INTEGER DEFAULT NULL"),
+        ("freeform_pending", "INTEGER DEFAULT NULL"),
+        ("freeform_total", "INTEGER DEFAULT NULL"),
+        ("freeform_next", "TEXT DEFAULT NULL"),
+        ("freeform_last", "TEXT DEFAULT NULL"),
+    ):
+        if name not in cols:
+            conn.execute("ALTER TABLE open_items ADD COLUMN %s %s" % (name, decl))
 
 
 def _migrate_terminology(conn):
@@ -185,9 +207,11 @@ def bootstrap(conn):
 
     Idempotent: safe to run on every server start. Pre-existing armories are
     migrated in place (terminology rename first, then autoexport_registers
-    gains reblade_fidelity if it predates that column too).
+    gains reblade_fidelity if it predates that column too, then open_items
+    gains the five freeform tracking columns if it predates any of them).
     """
     _migrate_terminology(conn)
     for stmt in STATEMENTS:
         conn.execute(stmt)
     _migrate_autoexport_registers(conn)
+    _migrate_open_items_freeform(conn)
