@@ -15,6 +15,7 @@ Build **durable, itemizable, addressable, and malleable** note storage:
 
 | Term | Meaning |
 |---|---|
+| **vambrace** | the per-project routing key: the UUIDv7 minted by the `vambrace` verb (action: equip), naming the project's database file `<key>.db` in the armory dir - every routed call is addressed by it |
 | **intention** | a category; the view layer of the note space. Many-to-many: a chain can belong to **any number of intentions** (including zero), and an intention can contain any number of chains - overlapping is the design. Membership is chain-only |
 | **chain** | the unit of note (the source system's "pin") — a header plus ordered blades plus intention membership |
 | **blade** | an individually addressable unit of a chain's body (the source system's "bullet") |
