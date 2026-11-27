@@ -13,10 +13,10 @@ Structural rules implemented here (SPEC 1):
     transaction (SPEC 1.5)
   * auto-linking on blade text writes, incl. reconciliation on blade_edit
     (SPEC 1.6)
-  * pointer endpoints validated server-side (SPEC 1.7)
+  * reblade endpoints validated server-side (SPEC 1.7)
   * gapless blade_order re-established inside the write transaction on every
     insert / delete / move / split / merge (SPEC 1.8)
-  * section membership writes and the owning chain's updated always together
+  * intention membership writes and the owning chain's updated always together
     (SPEC 1.8)
 """
 
@@ -47,7 +47,7 @@ class VerbError(Exception):
 # Endpoint space (SPEC 1.7): logs and state registers are NOT endpoints.
 _ENDPOINTS = (
     ("chain", "chain_headers", "name"),
-    ("section", "chain_sections", "name"),
+    ("intention", "chain_intentions", "name"),
     ("blade", "chain_blades", None),   # no name column; reported as its chain's name
     ("open_item", "open_items", "name"),
     ("ruling", "rulings", "name"),
@@ -120,7 +120,7 @@ def _pd(src, dst, kind, note, created):
     return {"src": src, "dst": dst, "kind": kind, "note": note, "created": ns_to_iso(created)}
 
 
-def _pointer_dict(row):
+def _reblade_dict(row):
     return _pd(row["src_uuid"], row["dst_uuid"], row["kind"], row["note"], row["created"])
 
 
@@ -144,12 +144,12 @@ def _rebuild_order(conn, chain_id, blade_ids):
         )
 
 
-def _section_names(conn, chain_id):
+def _intention_names(conn, chain_id):
     return [
         r["name"]
         for r in conn.execute(
-            "SELECT s.name FROM chain_section_map m "
-            "JOIN chain_sections s ON s.id = m.section_id "
+            "SELECT s.name FROM chain_intention_map m "
+            "JOIN chain_intentions s ON s.id = m.intention_id "
             "WHERE m.chain_id = ? ORDER BY s.name COLLATE NOCASE",
             (chain_id,),
         )
@@ -163,7 +163,7 @@ def _chain_composite(conn, chain_id):
         "name": h["name"],
         "created": ns_to_iso(h["created"]),
         "updated": ns_to_iso(h["updated"]),
-        "sections": _section_names(conn, chain_id),
+        "intentions": _intention_names(conn, chain_id),
         "blades": [
             {"id": b["id"], "pos": b["pos"], "text": b["text"]}
             for b in _ordered_blades(conn, chain_id)
@@ -296,33 +296,33 @@ def _run_write(handler, conn, args):
 
 # --------------------------------------------------------------- write verbs
 
-def _apply_sections(conn, tx, chain_id, sections):
-    """chain_put.sections / chain_split.sections upsert semantics (SPEC 3.1).
+def _apply_intentions(conn, tx, chain_id, intentions):
+    """chain_put.intentions / chain_split.intentions upsert semantics (SPEC 3.1).
 
-    Replace membership with exactly the given set; absent sections are created
-    (orientation default "B"); an existing section's orientation updates only
+    Replace membership with exactly the given set; absent intentions are created
+    (orientation default "B"); an existing intention's orientation updates only
     if supplied. The owning chain's updated moves in the same transaction.
     """
-    if sections is None:
+    if intentions is None:
         return
-    if not isinstance(sections, list):
-        raise VerbError("validation_failed", "sections must be an array")
+    if not isinstance(intentions, list):
+        raise VerbError("validation_failed", "intentions must be an array")
     ids = []
-    for entry in sections:
+    for entry in intentions:
         if not isinstance(entry, dict):
-            raise VerbError("validation_failed", "each section entry must be an object with 'name'")
+            raise VerbError("validation_failed", "each intention entry must be an object with 'name'")
         name = entry.get("name")
-        _need_str(name, "section name")
+        _need_str(name, "intention name")
         orientation = entry.get("orientation")
         if orientation is not None and orientation not in ("W", "B"):
-            raise VerbError("validation_failed", f"section orientation must be 'W' or 'B', got {orientation!r}")
+            raise VerbError("validation_failed", f"intention orientation must be 'W' or 'B', got {orientation!r}")
         row = conn.execute(
-            "SELECT id, orientation FROM chain_sections WHERE name = ?", (name,)
+            "SELECT id, orientation FROM chain_intentions WHERE name = ?", (name,)
         ).fetchone()
         if row is None:
             sid = new_uuid7()
             conn.execute(
-                "INSERT INTO chain_sections (id, name, orientation, created, updated) "
+                "INSERT INTO chain_intentions (id, name, orientation, created, updated) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (sid, name, orientation or "B", tx.now, tx.now),
             )
@@ -331,15 +331,15 @@ def _apply_sections(conn, tx, chain_id, sections):
             sid = row["id"]
             if orientation is not None and row["orientation"] != orientation:
                 conn.execute(
-                    "UPDATE chain_sections SET orientation = ?, updated = ? WHERE id = ?",
+                    "UPDATE chain_intentions SET orientation = ?, updated = ? WHERE id = ?",
                     (orientation, tx.now, sid),
                 )
                 tx.ref(sid, "modified")
         ids.append(sid)
-    conn.execute("DELETE FROM chain_section_map WHERE chain_id = ?", (chain_id,))
+    conn.execute("DELETE FROM chain_intention_map WHERE chain_id = ?", (chain_id,))
     for sid in ids:
         conn.execute(
-            "INSERT OR IGNORE INTO chain_section_map (chain_id, section_id) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO chain_intention_map (chain_id, intention_id) VALUES (?, ?)",
             (chain_id, sid),
         )
     conn.execute("UPDATE chain_headers SET updated = ? WHERE id = ?", (tx.now, chain_id))
@@ -364,7 +364,7 @@ def _h_chain_put(conn, args, tx):
     name = args.get("name")
     if name is not None:
         _need_str(name, "name")
-    sections = args.get("sections")
+    intentions = args.get("intentions")
     i = args.get("id")
     if i is not None and not isinstance(i, str):
         raise VerbError("validation_failed", "id must be a uuid string")
@@ -402,11 +402,11 @@ def _h_chain_put(conn, args, tx):
             )
             tx.ref(cid, "modified")
         final_name = name if renamed else row["name"]
-    if sections is not None:
-        _apply_sections(conn, tx, cid, sections)
+    if intentions is not None:
+        _apply_intentions(conn, tx, cid, intentions)
     rec = {"op": "chain_put", "chain": cid, "name": final_name}
-    if sections is not None:
-        rec["sections"] = [e.get("name") if isinstance(e, dict) else None for e in sections]
+    if intentions is not None:
+        rec["intentions"] = [e.get("name") if isinstance(e, dict) else None for e in intentions]
     tx.record(rec)
     return _chain_composite(conn, cid), f'chain_put "{final_name}"', "chain"
 
@@ -416,16 +416,16 @@ def _h_chain_delete(conn, args, tx):
     if row is None:
         raise VerbError("not_found", "chain not found (id or name required)")
     cid, cname = row["id"], row["name"]
-    incoming = conn.execute("SELECT * FROM pointers WHERE dst_uuid = ?", (cid,)).fetchall()
+    incoming = conn.execute("SELECT * FROM reblades WHERE dst_uuid = ?", (cid,)).fetchall()
     blade_ids = [
         r["id"]
         for r in conn.execute("SELECT id FROM chain_blades WHERE chain_id = ?", (cid,))
     ]
-    conn.execute("DELETE FROM pointers WHERE src_uuid = ?", (cid,))  # outgoing (header)
-    # Blades cascade-delete with the header, but pointers hold polymorphic
+    conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (cid,))  # outgoing (header)
+    # Blades cascade-delete with the header, but reblades hold polymorphic
     # UUIDs (no FK cascade) — remove the blades' outgoing refs too (SPEC 3.2).
     conn.execute(
-        "DELETE FROM pointers WHERE src_uuid IN "
+        "DELETE FROM reblades WHERE src_uuid IN "
         "(SELECT id FROM chain_blades WHERE chain_id = ?)",
         (cid,),
     )
@@ -434,7 +434,7 @@ def _h_chain_delete(conn, args, tx):
     for b in blade_ids:
         tx.ref(b, "deleted")
     tx.record({"op": "chain_delete", "chain": cid, "name": cname, "incoming": len(incoming)})
-    return {"incoming": [_pointer_dict(r) for r in incoming]}, f'chain_delete "{cname}"', "chain"
+    return {"incoming": [_reblade_dict(r) for r in incoming]}, f'chain_delete "{cname}"', "chain"
 
 
 def _h_chain_split(conn, args, tx):
@@ -468,10 +468,10 @@ def _h_chain_split(conn, args, tx):
         (nid, name, tx.now, tx.now),
     )
     tx.ref(nid, "created")
-    if args.get("sections") is not None:
-        _apply_sections(conn, tx, nid, args["sections"])
+    if args.get("intentions") is not None:
+        _apply_intentions(conn, tx, nid, args["intentions"])
     moved_set = set(moved)
-    for bid in moved:  # blade UUIDs and their pointers travel intact
+    for bid in moved:  # blade UUIDs and their reblades travel intact
         conn.execute(
             "UPDATE chain_blades SET chain_id = ?, updated = ? WHERE id = ?",
             (nid, tx.now, bid),
@@ -503,46 +503,46 @@ def _h_chain_merge(conn, args, tx):
         tx.ref(bid, "modified")
     _rebuild_order(conn, vid, vid_ids + did_ids)
     tx.ref(vid, "modified")
-    # section memberships are unioned into the survivor
+    # intention memberships are unioned into the survivor
     fold_secs = [
-        r["section_id"]
+        r["intention_id"]
         for r in conn.execute(
-            "SELECT section_id FROM chain_section_map WHERE chain_id = ?", (did,)
+            "SELECT intention_id FROM chain_intention_map WHERE chain_id = ?", (did,)
         )
     ]
     for sec_id in fold_secs:
         conn.execute(
-            "INSERT OR IGNORE INTO chain_section_map (chain_id, section_id) VALUES (?, ?)",
+            "INSERT OR IGNORE INTO chain_intention_map (chain_id, intention_id) VALUES (?, ?)",
             (vid, sec_id),
         )
         tx.ref(sec_id, "referenced")
-    # pointers aimed at the dissolved header are retargeted onto the survivor
-    incoming = conn.execute("SELECT * FROM pointers WHERE dst_uuid = ?", (did,)).fetchall()
+    # reblades aimed at the dissolved header are retargeted onto the survivor
+    incoming = conn.execute("SELECT * FROM reblades WHERE dst_uuid = ?", (did,)).fetchall()
     retargeted = []
     for p in incoming:
         clash = conn.execute(
-            "SELECT 1 FROM pointers WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
+            "SELECT 1 FROM reblades WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
             (p["src_uuid"], vid, p["kind"]),
         ).fetchone()
         if clash is not None:  # (src, survivor, kind) already exists: dedupe
             conn.execute(
-                "DELETE FROM pointers WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
+                "DELETE FROM reblades WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
                 (p["src_uuid"], did, p["kind"]),
             )
         else:
             conn.execute(
-                "UPDATE pointers SET dst_uuid = ? WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
+                "UPDATE reblades SET dst_uuid = ? WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
                 (vid, p["src_uuid"], did, p["kind"]),
             )
             retargeted.append(
                 _pd(p["src_uuid"], vid, p["kind"], p["note"], p["created"])
             )
-    conn.execute("DELETE FROM pointers WHERE src_uuid = ?", (did,))  # its outgoing
+    conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (did,))  # its outgoing
     conn.execute("DELETE FROM chain_headers WHERE id = ?", (did,))   # stops resolving
     tx.ref(did, "deleted")
     tx.record({
         "op": "chain_merge", "into": vid, "fold": did,
-        "blades": did_ids, "sections": fold_secs, "retargeted": len(retargeted),
+        "blades": did_ids, "intentions": fold_secs, "retargeted": len(retargeted),
     })
     return (
         {"survivor": _chain_composite(conn, vid), "retargeted": retargeted},
@@ -607,7 +607,7 @@ def _h_blade_edit(conn, args, tx):
     old_dsts = [
         r["dst_uuid"]
         for r in conn.execute(
-            "SELECT dst_uuid FROM pointers WHERE src_uuid = ? AND kind = 'name-ref'", (bid,)
+            "SELECT dst_uuid FROM reblades WHERE src_uuid = ? AND kind = 'name-ref'", (bid,)
         )
     ]
     expected, minted, candidates = _autolink(conn, tx, bid, text)
@@ -618,7 +618,7 @@ def _h_blade_edit(conn, args, tx):
     ]
     for p in deleted:
         conn.execute(
-            "DELETE FROM pointers WHERE src_uuid = ? AND dst_uuid = ? AND kind = 'name-ref'",
+            "DELETE FROM reblades WHERE src_uuid = ? AND dst_uuid = ? AND kind = 'name-ref'",
             (p["src"], p["dst"]),
         )
     conn.execute("UPDATE chain_blades SET text = ?, updated = ? WHERE id = ?", (text, tx.now, bid))
@@ -705,8 +705,8 @@ def _h_blade_delete(conn, args, tx):
     if row is None:
         raise VerbError("not_found", f"blade {bid} not found")
     cid = row["chain_id"]
-    incoming = conn.execute("SELECT * FROM pointers WHERE dst_uuid = ?", (bid,)).fetchall()
-    conn.execute("DELETE FROM pointers WHERE src_uuid = ?", (bid,))  # outgoing
+    incoming = conn.execute("SELECT * FROM reblades WHERE dst_uuid = ?", (bid,)).fetchall()
+    conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (bid,))  # outgoing
     conn.execute("DELETE FROM chain_blades WHERE id = ?", (bid,))
     remaining = [b["id"] for b in _ordered_blades(conn, cid)]
     _rebuild_order(conn, cid, remaining)
@@ -714,18 +714,18 @@ def _h_blade_delete(conn, args, tx):
     tx.ref(bid, "deleted")
     tx.ref(cid, "modified")
     tx.record({"op": "blade_delete", "blade": bid, "chain": cid, "incoming": len(incoming)})
-    return {"incoming": [_pointer_dict(r) for r in incoming]}, f"blade_delete {bid}", "blade"
+    return {"incoming": [_reblade_dict(r) for r in incoming]}, f"blade_delete {bid}", "blade"
 
 
 def _check_kind(conn, kind):
     if not isinstance(kind, str) or conn.execute(
-        "SELECT 1 FROM pointer_kinds WHERE kind = ?", (kind,)
+        "SELECT 1 FROM reblade_kinds WHERE kind = ?", (kind,)
     ).fetchone() is None:
-        known = [r["kind"] for r in conn.execute("SELECT kind FROM pointer_kinds ORDER BY kind")]
-        raise VerbError("validation_failed", f"unknown pointer kind {kind!r} (known: {known})")
+        known = [r["kind"] for r in conn.execute("SELECT kind FROM reblade_kinds ORDER BY kind")]
+        raise VerbError("validation_failed", f"unknown reblade kind {kind!r} (known: {known})")
 
 
-def _h_pointer_add(conn, args, tx):
+def _h_reblade_add(conn, args, tx):
     src, dst = args.get("src"), args.get("dst")
     kind, note = args.get("kind"), args.get("note")
     for label, v in (("src", src), ("dst", dst)):
@@ -739,52 +739,52 @@ def _h_pointer_add(conn, args, tx):
     if _resolve_endpoint(conn, dst) is None:
         raise VerbError("unresolvable_endpoint", f"dst {dst} does not resolve in any entity space")
     existing = conn.execute(
-        "SELECT * FROM pointers WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
+        "SELECT * FROM reblades WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
         (src, dst, kind),
     ).fetchone()
     if existing is not None:  # idempotent: returned, not duplicated
-        tx.record({"op": "pointer_add", "src": src, "dst": dst, "kind": kind, "created": False})
-        return {"pointer": _pointer_dict(existing)}, f"pointer_add {src} -> {dst}", "pointer"
+        tx.record({"op": "reblade_add", "src": src, "dst": dst, "kind": kind, "created": False})
+        return {"reblade": _reblade_dict(existing)}, f"reblade_add {src} -> {dst}", "reblade"
     conn.execute(
-        "INSERT INTO pointers (src_uuid, dst_uuid, kind, note, created) VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO reblades (src_uuid, dst_uuid, kind, note, created) VALUES (?, ?, ?, ?, ?)",
         (src, dst, kind, note, tx.now),
     )
     tx.ref(src, "referenced")
     tx.ref(dst, "referenced")
-    tx.record({"op": "pointer_add", "src": src, "dst": dst, "kind": kind, "created": True})
+    tx.record({"op": "reblade_add", "src": src, "dst": dst, "kind": kind, "created": True})
     return (
-        {"pointer": _pd(src, dst, kind, note, tx.now)},
-        f"pointer_add {src} -> {dst}",
-        "pointer",
+        {"reblade": _pd(src, dst, kind, note, tx.now)},
+        f"reblade_add {src} -> {dst}",
+        "reblade",
     )
 
 
-def _h_pointer_remove(conn, args, tx):
+def _h_reblade_remove(conn, args, tx):
     src, dst, kind = args.get("src"), args.get("dst"), args.get("kind")
     for label, v in (("src", src), ("dst", dst)):
         if not isinstance(v, str) or not v:
             raise VerbError("validation_failed", f"{label} is required (uuid)")
     _check_kind(conn, kind)
     row = conn.execute(
-        "SELECT * FROM pointers WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
+        "SELECT * FROM reblades WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
         (src, dst, kind),
     ).fetchone()
     if row is None:
-        raise VerbError("not_found", f"pointer ({src}, {dst}, {kind}) not found")
+        raise VerbError("not_found", f"reblade ({src}, {dst}, {kind}) not found")
     conn.execute(
-        "DELETE FROM pointers WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
+        "DELETE FROM reblades WHERE src_uuid = ? AND dst_uuid = ? AND kind = ?",
         (src, dst, kind),
     )
     tx.ref(src, "referenced")
     tx.ref(dst, "referenced")
-    tx.record({"op": "pointer_remove", "src": src, "dst": dst, "kind": kind})
-    return {"pointer": _pointer_dict(row)}, f"pointer_remove {src} -> {dst}", "pointer"
+    tx.record({"op": "reblade_remove", "src": src, "dst": dst, "kind": kind})
+    return {"reblade": _reblade_dict(row)}, f"reblade_remove {src} -> {dst}", "reblade"
 
 
 _BATCH_OPS = (
     "chain_put", "chain_delete", "chain_split", "chain_merge",
     "blade_insert", "blade_edit", "blade_move", "blade_delete",
-    "pointer_add", "pointer_remove",
+    "reblade_add", "reblade_remove",
 )
 
 
@@ -826,19 +826,19 @@ def _h_get(conn, args):
     ).fetchone()
     if row is not None:
         return _bare(row)
-    for table in ("chain_sections", "open_items", "rulings", "terms"):
+    for table in ("chain_intentions", "open_items", "rulings", "terms"):
         row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (uid,)).fetchone()
         if row is not None:
             return _bare(row)
     raise VerbError("not_found", f"no tracked entity with id {uid}")
 
 
-_SEARCH_SPACES = ("chain", "blade", "section", "open_item", "ruling", "term", "log")
+_SEARCH_SPACES = ("chain", "blade", "intention", "open_item", "ruling", "term", "log")
 # space -> (table, value column, name column) probes
 _SEARCH_SOURCES = {
     "chain": [("chain_headers", "name", "name")],
     "blade": [("chain_blades", "text", "chain_name")],
-    "section": [("chain_sections", "name", "name")],
+    "intention": [("chain_intentions", "name", "name")],
     "open_item": [("open_items", "name", "name"), ("open_items", "text", "name")],
     "ruling": [("rulings", "number", "name"), ("rulings", "name", "name"), ("rulings", "body", "name")],
     "term": [("terms", "term", "term"), ("terms", "text", "term")],
@@ -911,10 +911,10 @@ def _h_search(conn, args):
     return {"hits": ordered[:limit]}
 
 
-_LIST_SPACES = ("chain", "section", "open_item", "ruling", "term", "log")
+_LIST_SPACES = ("chain", "intention", "open_item", "ruling", "term", "log")
 _LIST_APPLICABLE = {
-    "chain": {"section", "name_prefix"},
-    "section": {"orientation", "name_prefix"},
+    "chain": {"intention", "name_prefix"},
+    "intention": {"orientation", "name_prefix"},
     "open_item": {"state", "name_prefix"},
     "ruling": {"state", "name_prefix"},
     "term": {"name_prefix"},
@@ -938,34 +938,34 @@ def _h_list(conn, args):
     if space == "chain":
         sql = "SELECT h.* FROM chain_headers h WHERE 1=1"
         params = []
-        if "section" in filt:
+        if "intention" in filt:
             sql += (
-                " AND EXISTS (SELECT 1 FROM chain_section_map m "
-                "JOIN chain_sections s ON s.id = m.section_id "
+                " AND EXISTS (SELECT 1 FROM chain_intention_map m "
+                "JOIN chain_intentions s ON s.id = m.intention_id "
                 "WHERE m.chain_id = h.id AND s.name = ?)"
             )
-            params.append(filt["section"])
+            params.append(filt["intention"])
         if "name_prefix" in filt:
             sql += " AND lower(h.name) LIKE lower(?) ESCAPE '\\'"
             params.append(_like_escaped(str(filt["name_prefix"])) + "%")
         sql += " ORDER BY h.created, h.id LIMIT ? OFFSET ?"
         for r in conn.execute(sql, (*params, limit, offset)):
             rec = _bare(r)
-            rec["sections"] = _section_names(conn, r["id"])
+            rec["intentions"] = _intention_names(conn, r["id"])
             if include_blades:
                 rec["blades"] = [
                     {"id": b["id"], "pos": b["pos"], "text": b["text"]}
                     for b in _ordered_blades(conn, r["id"])
                 ]
             items.append(rec)
-    elif space in ("section", "open_item", "ruling"):
-        table = {"section": "chain_sections", "open_item": "open_items", "ruling": "rulings"}[space]
+    elif space in ("intention", "open_item", "ruling"):
+        table = {"intention": "chain_intentions", "open_item": "open_items", "ruling": "rulings"}[space]
         sql = f"SELECT * FROM {table} WHERE 1=1"
         params = []
-        if space == "section" and "orientation" in filt:
+        if space == "intention" and "orientation" in filt:
             sql += " AND orientation = ?"
             params.append(filt["orientation"])
-        if "state" in filt and space != "section":
+        if "state" in filt and space != "intention":
             sql += " AND state = ?"
             params.append(filt["state"])
         if "name_prefix" in filt:
@@ -1002,7 +1002,7 @@ def _h_list(conn, args):
     return result
 
 
-def _h_pointers_of(conn, args):
+def _h_reblades_of(conn, args):
     uid = args.get("id")
     if not isinstance(uid, str) or not uid:
         raise VerbError("validation_failed", "id is required")
@@ -1014,7 +1014,7 @@ def _h_pointers_of(conn, args):
         _check_kind(conn, kind)
     rows = []
     for col in (["src_uuid", "dst_uuid"] if direction == "both" else [direction == "out" and "src_uuid" or "dst_uuid"]):
-        sql = f"SELECT * FROM pointers WHERE {col} = ?"
+        sql = f"SELECT * FROM reblades WHERE {col} = ?"
         params = [uid]
         if kind is not None:
             sql += " AND kind = ?"
@@ -1029,7 +1029,7 @@ def _h_pointers_of(conn, args):
         seen.add(key)
         s = _resolve_endpoint(conn, r["src_uuid"])
         d = _resolve_endpoint(conn, r["dst_uuid"])
-        e = _pointer_dict(r)
+        e = _reblade_dict(r)
         e["src_space"] = s["space"] if s else None
         e["src_name"] = s["name"] if s else None
         e["dst_space"] = d["space"] if d else None
@@ -1050,12 +1050,12 @@ def _neighbors(conn, u, direction, kinds):
         params = list(kinds)
     if direction in ("out", "both"):
         for r in conn.execute(
-            f"SELECT dst_uuid, kind FROM pointers WHERE src_uuid = ?{kind_sql}", (u, *params)
+            f"SELECT dst_uuid, kind FROM reblades WHERE src_uuid = ?{kind_sql}", (u, *params)
         ):
             out.append((r["dst_uuid"], r["kind"]))
     if direction in ("in", "both"):
         for r in conn.execute(
-            f"SELECT src_uuid, kind FROM pointers WHERE dst_uuid = ?{kind_sql}", (u, *params)
+            f"SELECT src_uuid, kind FROM reblades WHERE dst_uuid = ?{kind_sql}", (u, *params)
         ):
             out.append((r["src_uuid"], r["kind"]))
     return out
@@ -1138,8 +1138,8 @@ _WRITE_DISPATCH = {
     "blade_edit": _h_blade_edit,
     "blade_move": _h_blade_move,
     "blade_delete": _h_blade_delete,
-    "pointer_add": _h_pointer_add,
-    "pointer_remove": _h_pointer_remove,
+    "reblade_add": _h_reblade_add,
+    "reblade_remove": _h_reblade_remove,
     "batch": _h_batch,
 }
 
@@ -1147,7 +1147,7 @@ _READ_HANDLERS = {
     "get": _h_get,
     "search": _h_search,
     "list": _h_list,
-    "pointers_of": _h_pointers_of,
+    "reblades_of": _h_reblades_of,
     "follow": _h_follow,
     "history": _h_history,
 }

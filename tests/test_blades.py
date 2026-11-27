@@ -80,7 +80,7 @@ class Edit(QatenaTestCase):
 
     def test_edit_reconciliation_deleted_list_in_response_SPEC_1_6(self):
         # SPEC 1.6: reconciliation returns BOTH lists — stale refs as `deleted`
-        # pointer dicts (same shape as `minted`), new refs as `minted`.
+        # reblade dicts (same shape as `minted`), new refs as `minted`.
         cid = self.verb("chain_put", name="Alpha")["id"]
         tid = self.insert_term("anvil")
         bid = insert(self, cid, "the anvil glows")["blade"]["id"]
@@ -110,13 +110,13 @@ class Move(QatenaTestCase):
         self.assertEqual(self.positions(cid), [c, a, b])
         self.assert_gapless(cid)
 
-    def test_move_across_chains_gapless_both_uuid_and_pointers_stable(self):
+    def test_move_across_chains_gapless_both_uuid_and_reblades_stable(self):
         c1 = self.verb("chain_put", name="Alpha")["id"]
         c2 = self.verb("chain_put", name="Beta")["id"]
         a = insert(self, c1, "first line")["blade"]["id"]
         m = insert(self, c1, "second line")["blade"]["id"]
         b = insert(self, c2, "third line")["blade"]["id"]
-        self.verb("pointer_add", src=a, dst=b, kind="see")
+        self.verb("reblade_add", src=a, dst=b, kind="see")
         before = self.pkeys()
         res = self.verb("blade_move", id=m, to_chain=c2, index=0)
         self.assertEqual(res["blade"]["chain_id"], c2)
@@ -125,7 +125,7 @@ class Move(QatenaTestCase):
         self.assertEqual(self.positions(c2), [m, b])
         self.assert_gapless(c1)
         self.assert_gapless(c2)
-        # blade UUID and its pointers are unchanged
+        # blade UUID and its reblades are unchanged
         self.assertEqual(self.pkeys(), before)
 
     def test_move_invalid_index_nothing_persisted(self):
@@ -149,8 +149,8 @@ class Delete(QatenaTestCase):
         b = insert(self, cid, "second line")["blade"]["id"]
         c = insert(self, cid, "third line")["blade"]["id"]
         tid = self.insert_term("anvil")
-        self.verb("pointer_add", src=a, dst=b, kind="see")       # outgoing from a
-        self.verb("pointer_add", src=tid, dst=a, kind="source")  # incoming to a
+        self.verb("reblade_add", src=a, dst=b, kind="see")       # outgoing from a
+        self.verb("reblade_add", src=tid, dst=a, kind="source")  # incoming to a
         res = self.verb("blade_delete", id=a)
         self.assertIn("log_id", res)
         self.assertEqual(self.positions(cid), [b, c])

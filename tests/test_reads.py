@@ -1,4 +1,4 @@
-"""Reads: get / search / list / pointers_of / follow / history (SPEC 3.12-3.17)."""
+"""Reads: get / search / list / reblades_of / follow / history (SPEC 3.12-3.17)."""
 from qatena.db import now_ns, ns_to_iso
 from qatena.uuid7 import new_uuid7
 
@@ -15,7 +15,7 @@ def insert(case, chain, text, index=None):
 class Get(QatenaTestCase):
     def test_chain_composite_shape(self):
         cid = self.verb("chain_put", name="The Forge",
-                        sections=[{"name": "Work", "orientation": "W"}])["id"]
+                        intentions=[{"name": "Work", "orientation": "W"}])["id"]
         b1 = insert(self, cid, "alpha line")["blade"]["id"]
         b2 = insert(self, cid, "beta line")["blade"]["id"]
         g = self.verb("get", id=cid)
@@ -23,7 +23,7 @@ class Get(QatenaTestCase):
         self.assertEqual(g["name"], "The Forge")
         self.assertRegex(g["created"], ISO_RE)
         self.assertRegex(g["updated"], ISO_RE)
-        self.assertEqual(g["sections"], ["Work"])
+        self.assertEqual(g["intentions"], ["Work"])
         self.assertEqual([(x["id"], x["pos"], x["text"]) for x in g["blades"]],
                          [(b1, 0, "alpha line"), (b2, 1, "beta line")])
 
@@ -134,14 +134,14 @@ class Search(QatenaTestCase):
 class List(QatenaTestCase):
     def test_chain_space_shape_and_include_blades(self):
         c1 = self.verb("chain_put", name="Alpha",
-                       sections=[{"name": "S1"}])["id"]
+                       intentions=[{"name": "S1"}])["id"]
         c2 = self.verb("chain_put", name="Beta")["id"]
         insert(self, c1, "first line")
         res = self.verb("list", space="chain")
         self.assertEqual(res["count"], 2)
         by_name = {i["name"]: i for i in res["items"]}
         self.assertEqual(set(by_name), {"Alpha", "Beta"})
-        self.assertEqual(by_name["Alpha"]["sections"], ["S1"])
+        self.assertEqual(by_name["Alpha"]["intentions"], ["S1"])
         self.assertNotIn("blades", by_name["Alpha"])  # default false
         self.assertRegex(by_name["Alpha"]["created"], ISO_RE)
         res = self.verb("list", space="chain", include_blades=True)
@@ -151,9 +151,9 @@ class List(QatenaTestCase):
 
     def test_section_filter_and_name_prefix(self):
         self.verb("chain_put", name="Alpha",
-                  sections=[{"name": "S1", "orientation": "W"}])
+                  intentions=[{"name": "S1", "orientation": "W"}])
         self.verb("chain_put", name="Alphabetic")
-        res = self.verb("list", space="chain", filter={"section": "S1"})
+        res = self.verb("list", space="chain", filter={"intention": "S1"})
         self.assertEqual([i["name"] for i in res["items"]], ["Alpha"])
         res = self.verb("list", space="chain", filter={"name_prefix": "ALP"})
         self.assertEqual({i["name"] for i in res["items"]},
@@ -166,11 +166,11 @@ class List(QatenaTestCase):
         self.assertEqual([i["name"] for i in res["items"]], ["a_b"])
 
     def test_section_space_orientation_filter(self):
-        self.verb("chain_put", name="A", sections=[{"name": "S1", "orientation": "W"}])
-        self.verb("chain_put", name="B", sections=[{"name": "S2"}])
-        res = self.verb("list", space="section", filter={"orientation": "W"})
+        self.verb("chain_put", name="A", intentions=[{"name": "S1", "orientation": "W"}])
+        self.verb("chain_put", name="B", intentions=[{"name": "S2"}])
+        res = self.verb("list", space="intention", filter={"orientation": "W"})
         self.assertEqual([i["name"] for i in res["items"]], ["S1"])
-        res = self.verb("list", space="section")
+        res = self.verb("list", space="intention")
         self.assertEqual({i["name"] for i in res["items"]}, {"S1", "S2"})
         self.assertEqual({i["orientation"] for i in res["items"]}, {"W", "B"})
 
@@ -235,13 +235,13 @@ class ListLogs(QatenaTestCase):
                           filter={"since": "yesterday"})
 
 
-class PointersOf(QatenaTestCase):
+class RebladesOf(QatenaTestCase):
     def test_in_out_both_with_resolved_endpoint_names(self):
         cid = self.verb("chain_put", name="The Forge")["id"]
         tid = self.insert_term("anvil")
-        self.verb("pointer_add", src=cid, dst=tid, kind="source", note="prov")
-        self.verb("pointer_add", src=tid, dst=cid, kind="see")
-        out = self.verb("pointers_of", id=cid, direction="out")["edges"]
+        self.verb("reblade_add", src=cid, dst=tid, kind="source", note="prov")
+        self.verb("reblade_add", src=tid, dst=cid, kind="see")
+        out = self.verb("reblades_of", id=cid, direction="out")["edges"]
         self.assertEqual(len(out), 1)
         e = out[0]
         self.assertEqual((e["src"], e["dst"], e["kind"], e["note"]),
@@ -249,18 +249,18 @@ class PointersOf(QatenaTestCase):
         self.assertEqual((e["src_space"], e["src_name"]), ("chain", "The Forge"))
         self.assertEqual((e["dst_space"], e["dst_name"]), ("term", "anvil"))
         self.assertRegex(e["created"], ISO_RE)
-        inn = self.verb("pointers_of", id=cid, direction="in")["edges"]
+        inn = self.verb("reblades_of", id=cid, direction="in")["edges"]
         self.assertEqual(len(inn), 1)
         self.assertEqual((inn[0]["src"], inn[0]["kind"]), (tid, "see"))
-        both = self.verb("pointers_of", id=cid)["edges"]  # default: both
+        both = self.verb("reblades_of", id=cid)["edges"]  # default: both
         self.assertEqual(len(both), 2)
 
     def test_kind_filter(self):
         cid = self.verb("chain_put", name="The Forge")["id"]
         tid = self.insert_term("anvil")
-        self.verb("pointer_add", src=cid, dst=tid, kind="source")
-        self.verb("pointer_add", src=cid, dst=tid, kind="see")
-        edges = self.verb("pointers_of", id=cid, kind="see")["edges"]
+        self.verb("reblade_add", src=cid, dst=tid, kind="source")
+        self.verb("reblade_add", src=cid, dst=tid, kind="see")
+        edges = self.verb("reblades_of", id=cid, kind="see")["edges"]
         self.assertEqual(len(edges), 1)
         self.assertEqual(edges[0]["kind"], "see")
 
@@ -268,16 +268,16 @@ class PointersOf(QatenaTestCase):
         cid = self.verb("chain_put", name="The Forge")["id"]
         bid = insert(self, cid, "first line")["blade"]["id"]
         tid = self.insert_term("anvil")
-        self.verb("pointer_add", src=tid, dst=bid, kind="source")
-        e = self.verb("pointers_of", id=bid, direction="in")["edges"][0]
+        self.verb("reblade_add", src=tid, dst=bid, kind="source")
+        e = self.verb("reblades_of", id=bid, direction="in")["edges"][0]
         self.assertEqual((e["dst_space"], e["dst_name"]), ("blade", "The Forge"))
 
     def test_unknown_kind_validation_failed(self):
         cid = self.verb("chain_put", name="Alpha")["id"]
-        self.expect_error("validation_failed", "pointers_of", id=cid, kind="loves")
+        self.expect_error("validation_failed", "reblades_of", id=cid, kind="loves")
 
     def test_unresolved_id_returns_empty(self):
-        self.assertEqual(self.verb("pointers_of", id=new_uuid7())["edges"], [])
+        self.assertEqual(self.verb("reblades_of", id=new_uuid7())["edges"], [])
 
 
 class Follow(QatenaTestCase):
@@ -285,8 +285,8 @@ class Follow(QatenaTestCase):
         a = self.verb("chain_put", name="A1")["id"]
         b = self.verb("chain_put", name="B2")["id"]
         c = self.verb("chain_put", name="C3")["id"]
-        self.verb("pointer_add", src=a, dst=b, kind="see")
-        self.verb("pointer_add", src=b, dst=c, kind="source")
+        self.verb("reblade_add", src=a, dst=b, kind="see")
+        self.verb("reblade_add", src=b, dst=c, kind="source")
         return a, b, c
 
     def test_out_respects_max_hops(self):
@@ -317,8 +317,8 @@ class Follow(QatenaTestCase):
     def test_cycle_pruned(self):
         a = self.verb("chain_put", name="Loop A")["id"]
         b = self.verb("chain_put", name="Loop B")["id"]
-        self.verb("pointer_add", src=a, dst=b, kind="see")
-        self.verb("pointer_add", src=b, dst=a, kind="see")
+        self.verb("reblade_add", src=a, dst=b, kind="see")
+        self.verb("reblade_add", src=b, dst=a, kind="see")
         res = self.verb("follow", **{"from": a, "direction": "out", "max_hops": 5})
         self.assertEqual([n["uuid"] for n in res["nodes"]], [a, b])  # a not revisited
 
@@ -326,8 +326,8 @@ class Follow(QatenaTestCase):
         a = self.verb("chain_put", name="A1")["id"]
         b = self.verb("chain_put", name="B2")["id"]
         c = self.verb("chain_put", name="C3")["id"]
-        self.verb("pointer_add", src=a, dst=b, kind="source")
-        self.verb("pointer_add", src=a, dst=c, kind="see")
+        self.verb("reblade_add", src=a, dst=b, kind="source")
+        self.verb("reblade_add", src=a, dst=c, kind="see")
         res = self.verb("follow", **{"from": a, "kinds": ["see"], "max_hops": 2})
         self.assertEqual({n["uuid"] for n in res["nodes"]}, {a, c})
 
@@ -345,7 +345,7 @@ class Follow(QatenaTestCase):
         b1 = insert(self, a, "first line")["blade"]["id"]
         b2 = insert(self, a, "second line")["blade"]["id"]
         d = self.verb("chain_put", name="D4")["id"]
-        self.verb("pointer_add", src=d, dst=a, kind="part-of")
+        self.verb("reblade_add", src=d, dst=a, kind="part-of")
         res = self.verb("follow", **{"from": d, "expand_chains": True, "max_hops": 1})
         node_a = [n for n in res["nodes"] if n["uuid"] == a][0]
         self.assertEqual(node_a["blades"], [b1, b2])

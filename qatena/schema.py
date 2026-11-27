@@ -15,7 +15,7 @@ STATEMENTS = [
   created INTEGER NOT NULL,                        -- Unix ns
   updated INTEGER NOT NULL
 )""",
-    """CREATE TABLE IF NOT EXISTS chain_sections (
+    """CREATE TABLE IF NOT EXISTS chain_intentions (
   id          TEXT(36) NOT NULL PRIMARY KEY,       -- UUIDv7
   name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
   orientation TEXT    NOT NULL CHECK (orientation IN ('W', 'B')),
@@ -23,12 +23,12 @@ STATEMENTS = [
   created     INTEGER NOT NULL,
   updated     INTEGER NOT NULL
 )""",
-    """CREATE TABLE IF NOT EXISTS chain_section_map (
+    """CREATE TABLE IF NOT EXISTS chain_intention_map (
   chain_id   TEXT(36) NOT NULL REFERENCES chain_headers(id)  ON DELETE CASCADE,
-  section_id TEXT(36) NOT NULL REFERENCES chain_sections(id) ON DELETE CASCADE,
-  PRIMARY KEY (chain_id, section_id)
+  intention_id TEXT(36) NOT NULL REFERENCES chain_intentions(id) ON DELETE CASCADE,
+  PRIMARY KEY (chain_id, intention_id)
 )""",
-    "CREATE INDEX IF NOT EXISTS idx_csm_section ON chain_section_map (section_id)",
+    "CREATE INDEX IF NOT EXISTS idx_csm_intention ON chain_intention_map (intention_id)",
     """CREATE TABLE IF NOT EXISTS chain_blades (
   id       TEXT(36) NOT NULL PRIMARY KEY,          -- UUIDv7
   chain_id TEXT(36) NOT NULL REFERENCES chain_headers(id) ON DELETE CASCADE,
@@ -44,22 +44,22 @@ STATEMENTS = [
   PRIMARY KEY (chain_id, pos),
   UNIQUE (chain_id, blade_id)
 )""",
-    """CREATE TABLE IF NOT EXISTS pointer_kinds (                        -- seeded register, extensible **[resolution b]**
+    """CREATE TABLE IF NOT EXISTS reblade_kinds (                        -- seeded register, extensible **[resolution b]**
   kind TEXT NOT NULL PRIMARY KEY
 )""",
-    """INSERT OR IGNORE INTO pointer_kinds (kind) VALUES
+    """INSERT OR IGNORE INTO reblade_kinds (kind) VALUES
   ('name-ref'), ('supersedes'), ('part-of'), ('source'), ('see')""",
-    """CREATE TABLE IF NOT EXISTS pointers (
+    """CREATE TABLE IF NOT EXISTS reblades (
   src_uuid TEXT(36) NOT NULL,   -- endpoint, validated server-side (polymorphic)
   dst_uuid TEXT(36) NOT NULL,
-  kind     TEXT    NOT NULL REFERENCES pointer_kinds(kind),
+  kind     TEXT    NOT NULL REFERENCES reblade_kinds(kind),
   note     TEXT,
   created  INTEGER NOT NULL,
   PRIMARY KEY (src_uuid, dst_uuid, kind)
 )""",
-    "CREATE INDEX IF NOT EXISTS idx_pointers_dst ON pointers (dst_uuid)",
+    "CREATE INDEX IF NOT EXISTS idx_reblades_dst ON reblades (dst_uuid)",
     """CREATE TABLE IF NOT EXISTS logs (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,  -- dense, monotonic, append-only; never a pointer endpoint
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,  -- dense, monotonic, append-only; never a reblade endpoint
   created INTEGER NOT NULL,
   title   TEXT,
   area    TEXT,
@@ -109,7 +109,7 @@ STATEMENTS = [
   root_uuid        TEXT(36) NOT NULL,
   emit_path        TEXT     NOT NULL,
   emit_format      TEXT     NOT NULL,
-  pointer_fidelity TEXT     NOT NULL DEFAULT 'out',  -- none | in | out | both
+  reblade_fidelity TEXT     NOT NULL DEFAULT 'out',  -- none | in | out | both
   last_sig         TEXT,                -- NULL until first successful export
   last_emitted     INTEGER,             -- Unix ns of last successful export
   created          INTEGER NOT NULL,
@@ -119,23 +119,75 @@ STATEMENTS = [
 
 
 def _migrate_autoexport_registers(conn):
-    """Idempotent migration for vaults bootstrapped before pointer_fidelity
+    """Idempotent migration for armories bootstrapped before reblade_fidelity
     existed: the table above was created without the column, so add it.
     SQLite allows ADD COLUMN with NOT NULL when the default is a constant."""
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(autoexport_registers)")}
-    if "pointer_fidelity" not in cols:
+    if "reblade_fidelity" not in cols:
         conn.execute(
             "ALTER TABLE autoexport_registers "
-            "ADD COLUMN pointer_fidelity TEXT NOT NULL DEFAULT 'out'"
+            "ADD COLUMN reblade_fidelity TEXT NOT NULL DEFAULT 'out'"
         )
+
+
+def _migrate_terminology(conn):
+    """Idempotent terminology-tightening migration for pre-existing armories
+    (the 2026-11-27 rename: intention/reblade/armory vocabulary).
+
+    Renames the four tables (dropping their old-named indexes), renames the
+    two affected columns, and carries the stored values along (register
+    root_space, log areas). Each step is guarded, so fresh armories (the DDL
+    in STATEMENTS already carries the new names) and already-migrated ones
+    no-op. Table/column identifiers are static code constants; no
+    user-supplied value ever reaches the SQL text.
+    """
+    tables = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'")}
+    for old, new in (
+        ("chain_sections", "chain_intentions"),
+        ("chain_section_map", "chain_intention_map"),
+        ("pointers", "reblades"),
+        ("pointer_kinds", "reblade_kinds"),
+    ):
+        if old in tables and new not in tables:
+            conn.execute("ALTER TABLE %s RENAME TO %s" % (old, new))
+            tables.discard(old)
+            tables.add(new)
+    # SQLite does not rename index objects when their table is renamed; drop
+    # the old-named ones so the DDL in STATEMENTS creates the new-named ones.
+    indexes = {r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'index'")}
+    for old_idx in ("idx_csm_section", "idx_pointers_dst"):
+        if old_idx in indexes:
+            conn.execute("DROP INDEX %s" % old_idx)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(chain_intention_map)")}
+    if "section_id" in cols:
+        conn.execute("ALTER TABLE chain_intention_map "
+                     "RENAME COLUMN section_id TO intention_id")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(autoexport_registers)")}
+    if "pointer_fidelity" in cols:
+        conn.execute("ALTER TABLE autoexport_registers "
+                     "RENAME COLUMN pointer_fidelity TO reblade_fidelity")
+    if "root_space" in cols:
+        conn.execute("UPDATE autoexport_registers "
+                     "SET root_space = 'intention' WHERE root_space = 'section'")
+    if "logs" in tables:
+        conn.execute(
+            "UPDATE logs SET area = 'reblade_add' WHERE area = 'pointer_add'")
+        conn.execute(
+            "UPDATE logs SET area = 'reblade_remove' WHERE area = 'pointer_remove'")
+        # log areas store the entity name ('pointer') for reblade writes
+        conn.execute("UPDATE logs SET area = 'reblade' WHERE area = 'pointer'")
 
 
 def bootstrap(conn):
     """Create the full schema on a fresh DB; no-op on an existing one.
 
-    Idempotent: safe to run on every server start. Pre-existing vaults are
-    migrated in place (autoexport_registers gains pointer_fidelity).
+    Idempotent: safe to run on every server start. Pre-existing armories are
+    migrated in place (terminology rename first, then autoexport_registers
+    gains reblade_fidelity if it predates that column too).
     """
+    _migrate_terminology(conn)
     for stmt in STATEMENTS:
         conn.execute(stmt)
     _migrate_autoexport_registers(conn)

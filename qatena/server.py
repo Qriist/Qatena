@@ -2,9 +2,9 @@
 
 Transport: newline-delimited JSON (one JSON-RPC 2.0 object per line, UTF-8).
 Nothing but MCP messages goes to stdout; all diagnostics go to stderr.
-Multi-vault: every non-vambrace call routes to a vault file via its
-``vambrace`` key; the ``vambrace`` verb creates vaults. Serial message loop
-until stdin EOF; ``serve(vault_dir) -> 0``.
+Multi-armory: every non-vambrace call routes to an armory file via its
+``vambrace`` key; the ``vambrace`` verb creates armories. Serial message loop
+until stdin EOF; ``serve(armory_dir) -> 0``.
 """
 
 import json
@@ -20,14 +20,14 @@ from .verbs import VerbError, _WRITE_DISPATCH, _resolve_endpoint, execute
 TOOLS = [
     {
         "name": "chain_put",
-        "description": "Create or update a chain (note). Address by id or name; if neither matches, a fresh UUIDv7 is minted and the name is required. Presence-mask: only supplied fields change. Sections, if present, replace membership with exactly this set and upsert each section by name (absent sections are created; orientation defaults to 'B', or the value given; an existing section's orientation updates only if supplied). Returns the chain composite and the minted log id.",
+        "description": "Create or update a chain (note). Address by id or name; if neither matches, a fresh UUIDv7 is minted and the name is required. Presence-mask: only supplied fields change. Intentions, if present, replace membership with exactly this set and upsert each intention by name (absent intentions are created; orientation defaults to 'B', or the value given; an existing intention's orientation updates only if supplied). Returns the chain composite and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -39,7 +39,7 @@ TOOLS = [
                     "minLength": 1,
                     "description": "Chain name (alias). Unique within the chain space, case-insensitive."
                 },
-                "sections": {
+                "intentions": {
                     "type": "array",
                     "items": {
                         "type": "object",
@@ -60,7 +60,7 @@ TOOLS = [
                             "name"
                         ]
                     },
-                    "description": "If present, replaces the chain's section membership with exactly this set. Sections are upserted by name."
+                    "description": "If present, replaces the chain's intention membership with exactly this set. Intentions are upserted by name."
                 }
             },
             "minProperties": 1,
@@ -71,14 +71,14 @@ TOOLS = [
     },
     {
         "name": "chain_delete",
-        "description": "Delete a chain by id or name. Blades and section memberships are cascade-deleted; outgoing pointers are cascade-deleted and incoming pointers are preserved and reported in the response (they may still be meaningful). Returns the list of incoming pointers and the minted log id.",
+        "description": "Delete a chain by id or name. Blades and intention memberships are cascade-deleted; outgoing reblades are cascade-deleted and incoming reblades are preserved and reported in the response (they may still be meaningful). Returns the list of incoming reblades and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -97,14 +97,14 @@ TOOLS = [
     },
     {
         "name": "chain_split",
-        "description": "Carve a set of blades out of a source chain into a new chain. Blade UUIDs and their pointers travel intact. Blades are removed from the source and appended to the new chain in the order listed. The new chain's sections are set from the optional sections param (upsert semantics, as in chain_put). Returns both chain composites and the minted log id.",
+        "description": "Carve a set of blades out of a source chain into a new chain. Blade UUIDs and their reblades travel intact. Blades are removed from the source and appended to the new chain in the order listed. The new chain's intentions are set from the optional intentions param (upsert semantics, as in chain_put). Returns both chain composites and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "source": {
                     "type": "string",
@@ -123,7 +123,7 @@ TOOLS = [
                     "minLength": 1,
                     "description": "Name for the new chain."
                 },
-                "sections": {
+                "intentions": {
                     "type": "array",
                     "items": {
                         "type": "object",
@@ -143,7 +143,7 @@ TOOLS = [
                             "name"
                         ]
                     },
-                    "description": "Optional initial section membership for the new chain."
+                    "description": "Optional initial intention membership for the new chain."
                 }
             },
             "required": [
@@ -156,14 +156,14 @@ TOOLS = [
     },
     {
         "name": "chain_merge",
-        "description": "Fold one chain into a survivor. The dissolved chain's blades are appended to the survivor in their order; section memberships are unioned into the survivor; pointers aimed at the dissolved header are retargeted onto the survivor; the dissolved header's UUID stops resolving (recoverable via history on that UUID). Blade UUIDs and their pointers are unchanged. Returns the survivor composite, the retargeted pointers, and the minted log id.",
+        "description": "Fold one chain into a survivor. The dissolved chain's blades are appended to the survivor in their order; intention memberships are unioned into the survivor; reblades aimed at the dissolved header are retargeted onto the survivor; the dissolved header's UUID stops resolving (recoverable via history on that UUID). Blade UUIDs and their reblades are unchanged. Returns the survivor composite, the retargeted reblades, and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "into": {
                     "type": "string",
@@ -183,14 +183,14 @@ TOOLS = [
     },
     {
         "name": "blade_insert",
-        "description": "Insert a blade into a chain at a 0-based index (default: end). Runs auto-linking: exact name matches mint name-ref pointers; near-matches are returned as candidates (never linked). Returns the new blade UUID, its index, minted pointers, candidates, and the minted log id.",
+        "description": "Insert a blade into a chain at a 0-based index (default: end). Runs auto-linking: exact name matches mint name-ref reblades; near-matches are returned as candidates (never linked). Returns the new blade UUID, its index, minted reblades, candidates, and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "chain": {
                     "type": "string",
@@ -215,14 +215,14 @@ TOOLS = [
     },
     {
         "name": "blade_edit",
-        "description": "Replace a blade's text by UUID. Reconciles the blade's outgoing name-ref pointers: stale ones are deleted, new exact matches minted; near-matches returned as candidates. Returns the updated blade, minted/deleted pointers, candidates, and the minted log id.",
+        "description": "Replace a blade's text by UUID. Reconciles the blade's outgoing name-ref reblades: stale ones are deleted, new exact matches minted; near-matches returned as candidates. Returns the updated blade, minted/deleted reblades, candidates, and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -243,14 +243,14 @@ TOOLS = [
     },
     {
         "name": "blade_move",
-        "description": "Move a blade to a new position within its chain, or to another chain. blade_order is re-established gapless in the same transaction. The blade's UUID and pointers are unchanged. Returns the blade's new chain and index and the minted log id.",
+        "description": "Move a blade to a new position within its chain, or to another chain. blade_order is re-established gapless in the same transaction. The blade's UUID and reblades are unchanged. Returns the blade's new chain and index and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -275,14 +275,14 @@ TOOLS = [
     },
     {
         "name": "blade_delete",
-        "description": "Delete a blade by UUID. Its outgoing pointers are cascade-deleted; incoming pointers are preserved and reported. blade_order is re-established gapless in the same transaction. Returns the incoming pointers and the minted log id.",
+        "description": "Delete a blade by UUID. Its outgoing reblades are cascade-deleted; incoming reblades are preserved and reported. blade_order is re-established gapless in the same transaction. Returns the incoming reblades and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -298,14 +298,14 @@ TOOLS = [
     },
     {
         "name": "batch",
-        "description": "Execute a list of write ops (chain_put, chain_delete, chain_split, chain_merge, blade_insert, blade_edit, blade_move, blade_delete, pointer_add, pointer_remove) atomically: one transaction, all-or-nothing, applied in order. Later ops observe earlier ops' effects, including auto-linking. Returns per-op results (with minted/candidates where applicable) and the single minted log id. Any op failure rolls back the whole batch.",
+        "description": "Execute a list of write ops (chain_put, chain_delete, chain_split, chain_merge, blade_insert, blade_edit, blade_move, blade_delete, reblade_add, reblade_remove) atomically: one transaction, all-or-nothing, applied in order. Later ops observe earlier ops' effects, including auto-linking. Returns per-op results (with minted/candidates where applicable) and the single minted log id. Any op failure rolls back the whole batch.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "ops": {
                     "type": "array",
@@ -324,8 +324,8 @@ TOOLS = [
                                     "blade_edit",
                                     "blade_move",
                                     "blade_delete",
-                                    "pointer_add",
-                                    "pointer_remove"
+                                    "reblade_add",
+                                    "reblade_remove"
                                 ]
                             },
                             "args": {
@@ -347,15 +347,15 @@ TOOLS = [
         }
     },
     {
-        "name": "pointer_add",
-        "description": "Create an explicit typed link between two UUIDs. kind is the semantic relationship, never the endpoint type (that is implicit in the UUID). Endpoints must resolve in the tracked entity space (logs and registers are not endpoints). Idempotent on (src, dst, kind): an existing pointer is returned, not duplicated. Returns the pointer and the minted log id.",
+        "name": "reblade_add",
+        "description": "Create an explicit typed link between two UUIDs. kind is the semantic relationship, never the endpoint type (that is implicit in the UUID). Endpoints must resolve in the tracked entity space (logs and registers are not endpoints). Idempotent on (src, dst, kind): an existing reblade is returned, not duplicated. Returns the reblade and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "src": {
                     "type": "string",
@@ -388,15 +388,15 @@ TOOLS = [
         }
     },
     {
-        "name": "pointer_remove",
-        "description": "Remove the pointer identified by (src, dst, kind). Errors with not_found if absent. Returns the removed pointer and the minted log id.",
+        "name": "reblade_remove",
+        "description": "Remove the reblade identified by (src, dst, kind). Errors with not_found if absent. Returns the removed reblade and the minted log id.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "src": {
                     "type": "string",
@@ -427,14 +427,14 @@ TOOLS = [
     },
     {
         "name": "get",
-        "description": "Fetch any tracked entity by UUID. Chains return the composite: header, ordered blades (UUID, index, text), and section names. Blades return the blade plus its chain's name. Sections, open items, rulings, and terms return their bare records. A dissolved (merged) UUID returns not_found; the dissolving merge is recoverable via history on that UUID.",
+        "description": "Fetch any tracked entity by UUID. Chains return the composite: header, ordered blades (UUID, index, text), and intention names. Blades return the blade plus its chain's name. Intentions, open items, rulings, and terms return their bare records. A dissolved (merged) UUID returns not_found; the dissolving merge is recoverable via history on that UUID.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -449,14 +449,14 @@ TOOLS = [
     },
     {
         "name": "search",
-        "description": "Multi-probe union search across entity spaces: chain names, blade text, section names, open item names/text, ruling numbers/names/bodies, term names/definitions, log titles/bodies. Probes are OR'd (substring, case-insensitive). Results are unioned, each with its entity space, UUID, name, and a context window around the match. Returns up to limit hits.",
+        "description": "Multi-probe union search across entity spaces: chain names, blade text, intention names, open item names/text, ruling numbers/names/bodies, term names/definitions, log titles/bodies. Probes are OR'd (substring, case-insensitive). Results are unioned, each with its entity space, UUID, name, and a context window around the match. Returns up to limit hits.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "probes": {
                     "type": "array",
@@ -474,7 +474,7 @@ TOOLS = [
                         "enum": [
                             "chain",
                             "blade",
-                            "section",
+                            "intention",
                             "open_item",
                             "ruling",
                             "term",
@@ -502,20 +502,20 @@ TOOLS = [
     },
     {
         "name": "list",
-        "description": "List an entity space with filters. Returns bare records (chains as headers plus section names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: section (name), name_prefix; sections: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); any space: name_prefix where the space has a name/alias field.",
+        "description": "List an entity space with filters. Returns bare records (chains as headers plus intention names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: intention (name), name_prefix; intentions: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); any space: name_prefix where the space has a name/alias field.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "space": {
                     "type": "string",
                     "enum": [
                         "chain",
-                        "section",
+                        "intention",
                         "open_item",
                         "ruling",
                         "term",
@@ -525,7 +525,7 @@ TOOLS = [
                 "filter": {
                     "type": "object",
                     "properties": {
-                        "section": {
+                        "intention": {
                             "type": "string"
                         },
                         "orientation": {
@@ -577,15 +577,15 @@ TOOLS = [
         }
     },
     {
-        "name": "pointers_of",
-        "description": "Incoming and/or outgoing pointers for a UUID, filterable by kind. Each edge is returned as {src, dst, kind, note, created} with both endpoints resolved: their entity space and name.",
+        "name": "reblades_of",
+        "description": "Incoming and/or outgoing reblades for a UUID, filterable by kind. Each edge is returned as {src, dst, kind, note, created} with both endpoints resolved: their entity space and name.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -619,14 +619,14 @@ TOOLS = [
     },
     {
         "name": "follow",
-        "description": "Multi-hop traversal from a UUID through the pointer graph. Returns visited nodes {uuid, name, space} with the edge kinds traversed, up to max_hops. Cycles are detected and pruned. Chain nodes include blades only if expand_chains.",
+        "description": "Multi-hop traversal from a UUID through the reblade graph. Returns visited nodes {uuid, name, space} with the edge kinds traversed, up to max_hops. Cycles are detected and pruned. Chain nodes include blades only if expand_chains.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "from": {
                     "type": "string",
@@ -680,7 +680,7 @@ TOOLS = [
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory."
                 },
                 "id": {
                     "type": "string",
@@ -700,34 +700,34 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live section/chain/blade stack to emit_path immediately, read-only against the vault (no register row, no log, no stored signature). See SPEC 3.18.",
+        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the armory's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing armory actions: alongside 'action' they take the armory's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the armory (no register row, no log, no stored signature). See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": [
-                        "create",
+                        "equip",
                         "register_autoexport",
                         "deregister_autoexport",
                         "export"
                     ],
-                    "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live section/chain/blade stack to emit_path, read-only against the vault (no register row, no log, no signature); pointer_fidelity selects the pointer layer for this render (default out)."
+                    "description": "equip: key-less — mints a new armory. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the armory routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the armory (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)."
                 },
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For register_autoexport / deregister_autoexport / export: the vault's routing key (returned by action=create). Not used by create."
+                    "description": "For register_autoexport / deregister_autoexport / export: the armory's routing key (returned by action=equip). Not used by equip."
                 },
                 "root": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE section, chain, or blade (register / export); the registered root (deregister). Not used by create."
+                    "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE intention, chain, or blade (register / export); the registered root (deregister). Not used by equip."
                 },
                 "emit_path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by create."
+                    "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by equip."
                 },
                 "emit_format": {
                     "type": "string",
@@ -737,9 +737,9 @@ TOOLS = [
                         "json",
                         "ndjson"
                     ],
-                    "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by create or deregister."
+                    "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister."
                 },
-                "pointer_fidelity": {
+                "reblade_fidelity": {
                     "type": "string",
                     "enum": [
                         "none",
@@ -747,7 +747,7 @@ TOOLS = [
                         "out",
                         "both"
                     ],
-                    "description": "For register_autoexport and export only: pointer layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by create or deregister."
+                    "description": "For register_autoexport and export only: reblade layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by equip or deregister."
                 }
             },
             "required": [
@@ -781,91 +781,91 @@ def _tool_error(code, message):
     return {"error": {"code": code, "message": message}}
 
 
-def _call_vambrace(vault_dir, arguments):
-    """The vambrace verb itself: vault control (SPEC 1.9, 3.18).
+def _call_vambrace(armory_dir, arguments):
+    """The vambrace verb itself: armory control (SPEC 1.9, 3.18).
 
-    ``create`` is the only key-less action. ``register_autoexport``,
+    ``equip`` is the only key-less action. ``register_autoexport``,
     ``deregister_autoexport``, and ``export`` are KEY-BEARING: they take the
-    vault routing key in ``vambrace`` and are validated fail-closed exactly
+    armory routing key in ``vambrace`` and are validated fail-closed exactly
     like a routed verb. ``export`` is one-shot: it renders and writes a
-    stack file immediately, read-only against the vault (no register row,
+    stack file immediately, read-only against the armory (no register row,
     no log row, no stored signature).
     """
     action = arguments.get("action")
-    if action == "create":
+    if action == "equip":
         key = uuid7.new_uuid7()
-        conn = db.connect(os.path.join(vault_dir, key + ".db"))
+        conn = db.connect(os.path.join(armory_dir, key + ".db"))
         try:
             schema.bootstrap(conn)
         finally:
             conn.close()
         return {"vambrace": key}, False
     if action == "register_autoexport":
-        return _call_register_autoexport(vault_dir, arguments)
+        return _call_register_autoexport(armory_dir, arguments)
     if action == "deregister_autoexport":
-        return _call_deregister_autoexport(vault_dir, arguments)
+        return _call_deregister_autoexport(armory_dir, arguments)
     if action == "export":
-        return _call_export(vault_dir, arguments)
+        return _call_export(armory_dir, arguments)
     return _tool_error(
         "unsupported_action",
-        f"unsupported vambrace action {action!r} — v1 supports: create, "
+        f"unsupported vambrace action {action!r} — v1 supports: equip, "
         "register_autoexport, deregister_autoexport, export"), True
 
 
-def _validate_routing_key(key, vault_dir):
+def _validate_routing_key(key, armory_dir):
     """Shared fail-closed key check: routed verbs and key-bearing vambrace
     actions (SPEC 1.9). Returns (vault_path, None) or (None, (payload, True))."""
     if not isinstance(key, str) or not key:
         return None, (_tool_error("missing_vambrace",
-                                  "vambrace routing key is required — create a vault with the "
-                                  "vambrace verb (action=create) first"), True)
+                                  "vambrace routing key is required — create an armory with the "
+                                  "vambrace verb (action=equip) first"), True)
     if not _VAMBRACE_KEY_RE.match(key):
         return None, (_tool_error("malformed_vambrace",
                                   f"vambrace key must be a UUIDv7 (36-char lowercase, version 7): got {key!r}"), True)
-    path = os.path.join(vault_dir, key + ".db")
+    path = os.path.join(armory_dir, key + ".db")
     if not os.path.exists(path):
         return None, (_tool_error("unknown_vambrace",
-                                  f"unknown vambrace '{key}': no such vault (create one with the vambrace verb)"), True)
+                                  f"unknown vambrace '{key}': no such armory (create one with the vambrace verb)"), True)
     return path, None
 
 
-# A stack is defined over section -> chain -> blade only (SPEC 3.18).
-_STACKABLE_ROOTS = ("section", "chain", "blade")
+# A stack is defined over intention -> chain -> blade only (SPEC 3.18).
+_STACKABLE_ROOTS = ("intention", "chain", "blade")
 
 
-def _register_tx(conn, now, root, space, emit_path, emit_format, pointer_fidelity=None):
+def _register_tx(conn, now, root, space, emit_path, emit_format, reblade_fidelity=None):
     """Upsert the register row and mint its log row, one transaction.
 
     Identity (root_uuid, emit_path); re-registering with a different format
-    OR pointer_fidelity replaces it. pointer_fidelity is presence-masked:
+    OR reblade_fidelity replaces it. reblade_fidelity is presence-masked:
     None = keep the stored value ('out' on creation).
     Returns (replaced, log_id, effective_fidelity).
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
         existing = conn.execute(
-            "SELECT emit_format, pointer_fidelity FROM autoexport_registers "
+            "SELECT emit_format, reblade_fidelity FROM autoexport_registers "
             "WHERE root_uuid = ? AND emit_path = ?",
             (root, emit_path),
         ).fetchone()
         if existing is None:
             replaced = False
-            fidelity = pointer_fidelity if pointer_fidelity is not None else "out"
+            fidelity = reblade_fidelity if reblade_fidelity is not None else "out"
             conn.execute(
                 "INSERT INTO autoexport_registers "
-                "(root_uuid, emit_path, emit_format, pointer_fidelity, created) "
+                "(root_uuid, emit_path, emit_format, reblade_fidelity, created) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (root, emit_path, emit_format, fidelity, now),
             )
         else:
-            fidelity = (pointer_fidelity if pointer_fidelity is not None
-                        else existing["pointer_fidelity"])
-            fid_changed = (pointer_fidelity is not None
-                           and pointer_fidelity != existing["pointer_fidelity"])
+            fidelity = (reblade_fidelity if reblade_fidelity is not None
+                        else existing["reblade_fidelity"])
+            fid_changed = (reblade_fidelity is not None
+                           and reblade_fidelity != existing["reblade_fidelity"])
             replaced = existing["emit_format"] != emit_format or fid_changed
             if replaced:
                 conn.execute(
-                    "UPDATE autoexport_registers SET emit_format = ?, pointer_fidelity = ? "
+                    "UPDATE autoexport_registers SET emit_format = ?, reblade_fidelity = ? "
                     "WHERE root_uuid = ? AND emit_path = ?",
                     (emit_format, fidelity, root, emit_path),
                 )
@@ -876,7 +876,7 @@ def _register_tx(conn, now, root, space, emit_path, emit_format, pointer_fidelit
                 "root_space": space,
                 "emit_path": emit_path,
                 "emit_format": emit_format,
-                "pointer_fidelity": fidelity,
+                "reblade_fidelity": fidelity,
                 "replaced": replaced,
             },
             sort_keys=True, separators=(",", ":"),
@@ -929,16 +929,16 @@ def _deregister_tx(conn, now, root, emit_path):
     return cur.lastrowid
 
 
-def _call_register_autoexport(vault_dir, arguments):
+def _call_register_autoexport(armory_dir, arguments):
     """register_autoexport (SPEC 3.18): key-bearing; synchronous first export."""
-    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+    path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
     if err is not None:
         return err
     root = arguments.get("root")
     if not isinstance(root, str) or not root:
         return _tool_error("validation_failed",
                            "root is required for register_autoexport: the uuid of a live "
-                           "section, chain, or blade"), True
+                           "intention, chain, or blade"), True
     emit_path = arguments.get("emit_path")
     if not isinstance(emit_path, str) or not emit_path:
         return _tool_error("validation_failed",
@@ -953,10 +953,10 @@ def _call_register_autoexport(vault_dir, arguments):
         return _tool_error("validation_failed",
                            f"emit_format must be one of {list(autoexport.ALLOWED_FORMATS)}: "
                            f"got {emit_format!r}"), True
-    pointer_fidelity = arguments.get("pointer_fidelity")
-    if pointer_fidelity is not None and pointer_fidelity not in autoexport.POINTER_FIDELITIES:
+    reblade_fidelity = arguments.get("reblade_fidelity")
+    if reblade_fidelity is not None and reblade_fidelity not in autoexport.REBLADE_FIDELITIES:
         return _tool_error("validation_failed",
-                           "pointer_fidelity must be one of none, in, out, both"), True
+                           "reblade_fidelity must be one of none, in, out, both"), True
 
     conn = db.connect(path)
     try:
@@ -968,11 +968,11 @@ def _call_register_autoexport(vault_dir, arguments):
         if res["space"] not in _STACKABLE_ROOTS:
             return _tool_error("validation_failed",
                                f"root space {res['space']!r} is not stackable (must be "
-                               "section, chain, or blade)"), True
+                               "intention, chain, or blade)"), True
         space = res["space"]
         now = db.now_ns()
         replaced, log_id, fidelity = _register_tx(
-            conn, now, root, space, emit_path, emit_format, pointer_fidelity)
+            conn, now, root, space, emit_path, emit_format, reblade_fidelity)
         payload = autoexport.compute_stack(conn, root, fidelity)
         # Synchronous first export (SPEC 3.18): registration is a setup call,
         # not a hot path — the response reports the initial write's outcome.
@@ -987,7 +987,7 @@ def _call_register_autoexport(vault_dir, arguments):
             "root_space": space,
             "emit_path": emit_path,
             "emit_format": emit_format,
-            "pointer_fidelity": fidelity,
+            "reblade_fidelity": fidelity,
             "stack": {"chains": payload["counts"]["chains"],
                       "blades": payload["counts"]["blades"]},
             "exported": exported,
@@ -1004,9 +1004,9 @@ def _call_register_autoexport(vault_dir, arguments):
         conn.close()
 
 
-def _call_deregister_autoexport(vault_dir, arguments):
+def _call_deregister_autoexport(armory_dir, arguments):
     """deregister_autoexport (SPEC 3.18): key-bearing; the file stays on disk."""
-    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+    path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
     if err is not None:
         return err
     root = arguments.get("root")
@@ -1038,23 +1038,23 @@ def _call_deregister_autoexport(vault_dir, arguments):
         conn.close()
 
 
-def _call_export(vault_dir, arguments):
+def _call_export(armory_dir, arguments):
     """export (SPEC 3.18): key-bearing ONE-SHOT.
 
     Mirrors the register_autoexport validation chain, then renders and
     writes the stack file immediately. Deliberately read-only against the
-    vault: no register row, no log row, no log_refs, no stored signature --
+    armory: no register row, no log row, no log_refs, no stored signature --
     and so no schema.bootstrap on this path (the key check above already
-    guarantees the vault file exists).
+    guarantees the armory file exists).
     """
-    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+    path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
     if err is not None:
         return err
     root = arguments.get("root")
     if not isinstance(root, str) or not root:
         return _tool_error("validation_failed",
                            "root is required for export: the uuid of a live "
-                           "section, chain, or blade"), True
+                           "intention, chain, or blade"), True
     emit_path = arguments.get("emit_path")
     if not isinstance(emit_path, str) or not emit_path:
         return _tool_error("validation_failed",
@@ -1069,11 +1069,11 @@ def _call_export(vault_dir, arguments):
         return _tool_error("validation_failed",
                            f"emit_format must be one of {list(autoexport.ALLOWED_FORMATS)}: "
                            f"got {emit_format!r}"), True
-    pointer_fidelity = arguments.get("pointer_fidelity")
-    if pointer_fidelity is not None and pointer_fidelity not in autoexport.POINTER_FIDELITIES:
+    reblade_fidelity = arguments.get("reblade_fidelity")
+    if reblade_fidelity is not None and reblade_fidelity not in autoexport.REBLADE_FIDELITIES:
         return _tool_error("validation_failed",
-                           "pointer_fidelity must be one of none, in, out, both"), True
-    fidelity = pointer_fidelity if pointer_fidelity is not None else "out"
+                           "reblade_fidelity must be one of none, in, out, both"), True
+    fidelity = reblade_fidelity if reblade_fidelity is not None else "out"
 
     conn = autoexport.open_readonly(path)
     try:
@@ -1084,7 +1084,7 @@ def _call_export(vault_dir, arguments):
         if res["space"] not in _STACKABLE_ROOTS:
             return _tool_error("validation_failed",
                                f"root space {res['space']!r} is not stackable (must be "
-                               "section, chain, or blade)"), True
+                               "intention, chain, or blade)"), True
         space = res["space"]
         try:
             written = autoexport.write_export(
@@ -1107,21 +1107,21 @@ def _call_export(vault_dir, arguments):
         "root_space": space,
         "emit_path": emit_path,
         "emit_format": emit_format,
-        "pointer_fidelity": fidelity,
+        "reblade_fidelity": fidelity,
         "stack": {"chains": counts["chains"], "blades": counts["blades"]},
         "exported": True,
         "exported_at": exported_at,
     }, False
 
 
-def _call_routed(vault_dir, name, arguments):
-    """Route a non-vambrace call to its vault; fail closed, no default (SPEC 1.9)."""
-    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+def _call_routed(armory_dir, name, arguments):
+    """Route a non-vambrace call to its armory; fail closed, no default (SPEC 1.9)."""
+    path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
     if err is not None:
         return err
     conn = db.connect(path)
     try:
-        schema.bootstrap(conn)  # idempotent: keeps a hand-touched vault file self-healing
+        schema.bootstrap(conn)  # idempotent: keeps a hand-touched armory file self-healing
         try:
             # the verb layer never sees the routing key
             args = {k: v for k, v in arguments.items() if k != "vambrace"}
@@ -1154,7 +1154,7 @@ def _autoexport_check(conn, vault_path):
     """
     try:
         regs = conn.execute(
-            "SELECT root_uuid, emit_path, emit_format, last_sig, pointer_fidelity "
+            "SELECT root_uuid, emit_path, emit_format, last_sig, reblade_fidelity "
             "FROM autoexport_registers"
         ).fetchall()
     except sqlite3.Error as e:
@@ -1166,7 +1166,7 @@ def _autoexport_check(conn, vault_path):
         key = (reg["root_uuid"], reg["emit_path"])
         try:
             payload = autoexport.compute_stack(
-                conn, reg["root_uuid"], reg["pointer_fidelity"])
+                conn, reg["root_uuid"], reg["reblade_fidelity"])
             if payload is None:
                 continue  # root died; its register row was cascade-deleted with it
             sig = autoexport.stack_signature(payload)
@@ -1181,7 +1181,7 @@ def _autoexport_check(conn, vault_path):
             print(f"qatena: autoexport failed for register {key}: {e!r}", file=sys.stderr)
 
 
-def _handle(vault_dir, msg):
+def _handle(armory_dir, msg):
     method = msg.get("method")
     has_id = "id" in msg
     msg_id = msg.get("id") if has_id else None
@@ -1220,9 +1220,9 @@ def _handle(vault_dir, msg):
         if not isinstance(arguments, dict):
             arguments = {}
         if name == "vambrace":
-            payload, is_error = _call_vambrace(vault_dir, arguments)
+            payload, is_error = _call_vambrace(armory_dir, arguments)
         else:
-            payload, is_error = _call_routed(vault_dir, name, arguments)
+            payload, is_error = _call_routed(armory_dir, name, arguments)
         _send_result(msg_id, {
             "content": [{"type": "text", "text": json.dumps(payload, separators=(",", ":"), ensure_ascii=False)}],
             "isError": is_error,
@@ -1232,10 +1232,10 @@ def _handle(vault_dir, msg):
     _send_error(msg_id, -32601, "method not found")
 
 
-def serve(vault_dir: str) -> int:
+def serve(armory_dir: str) -> int:
     """Serial MCP stdio loop until stdin EOF. Returns 0.
 
-    vault_dir: directory holding the vault files (<key>.db). The server keeps
+    armory_dir: directory holding the armory files (<key>.db). The server keeps
     no routing state — routing is the files themselves, so it survives restart.
     """
     for stream in (sys.stdin, sys.stdout):
@@ -1258,7 +1258,7 @@ def serve(vault_dir: str) -> int:
             _send_error(None, -32700, "parse error")
             continue
         try:
-            _handle(vault_dir, msg)
+            _handle(armory_dir, msg)
         except Exception as e:
             print(f"qatena: handler error for {msg.get('method')!r}: {e!r}", file=sys.stderr)
             if "id" in msg:

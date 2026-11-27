@@ -2,7 +2,7 @@
 
 Loaded alias registry (name column of every entity space):
   chain_headers.name  -> space "chain"
-  chain_sections.name -> space "section"
+  chain_intentions.name -> space "intention"
   open_items.name     -> space "open_item"
   rulings.name        -> space "ruling"
   rulings.number      -> space "ruling"
@@ -27,7 +27,7 @@ def load_aliases(conn) -> list:
     rows = conn.execute(
         """
         SELECT name AS alias, id, 'chain'     AS space FROM chain_headers
-        UNION ALL SELECT name,   id, 'section'   FROM chain_sections
+        UNION ALL SELECT name,   id, 'intention'   FROM chain_intentions
         UNION ALL SELECT name,   id, 'open_item' FROM open_items
         UNION ALL SELECT name,   id, 'ruling'    FROM rulings
         UNION ALL SELECT number, id, 'ruling'    FROM rulings
@@ -112,10 +112,10 @@ def analyze(text: str, aliases: list):
 
 
 def mint_name_refs(conn, src_uuid, exact_hits, now) -> list:
-    """Insert name-ref pointers from src to every exact-matched entity.
+    """Insert name-ref reblades from src to every exact-matched entity.
 
     INSERT OR IGNORE makes this idempotent on (src, dst, kind). Returns only
-    the pointers actually created now, as {"src", "dst", "kind"} dicts.
+    the reblades actually created now, as {"src", "dst", "kind"} dicts.
     """
     minted = []
     seen = set()
@@ -124,7 +124,7 @@ def mint_name_refs(conn, src_uuid, exact_hits, now) -> list:
             continue
         seen.add(hit["id"])
         cur = conn.execute(
-            "INSERT OR IGNORE INTO pointers (src_uuid, dst_uuid, kind, created) "
+            "INSERT OR IGNORE INTO reblades (src_uuid, dst_uuid, kind, created) "
             "VALUES (?, ?, 'name-ref', ?)",
             (src_uuid, hit["id"], now),
         )

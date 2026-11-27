@@ -4,8 +4,8 @@
 Resolutions the design left rough are marked **[resolution]** — the set of those is pending review.
 
 **Runtime:** Python 3, stdlib `sqlite3`, a single stdio MCP server process (goose extension).
-One database file per vault, created and owned by the server (§1.9, §3.18). The server is the **sole write
-surface**: no other process or tool may open any vault file for writes — the one sanctioned exception is
+One database file per armory, created and owned by the server (§1.9, §3.18). The server is the **sole write
+surface**: no other process or tool may open any armory file for writes — the one sanctioned exception is
 the autoexport exporter child's single small per-export transaction (§3.18).
 
 ## 1. Conventions
@@ -16,7 +16,7 @@ the autoexport exporter child's single small per-export transaction (§3.18).
   (`uuid.uuid7()`-equivalent); clients never generate IDs.
 - Stored as `TEXT(36)` for v1. **Finalizing step (end of project):** convert all ID columns to
   `BLOB(16)`. Storage-only change; the tool surface keeps 36-char strings either way.
-- The only non-UUID ID: `logs.id` (strictly sequential integer). Logs are never pointer endpoints.
+- The only non-UUID ID: `logs.id` (strictly sequential integer). Logs are never reblade endpoints.
 
 ### 1.2 Timestamps
 
@@ -32,7 +32,7 @@ the autoexport exporter child's single small per-export transaction (§3.18).
 - **Cross-space collisions are allowed**: the same name may exist in multiple spaces (a name can
   carry real meaning at multiple strata). Consequence for auto-linking: an exact name match mints
   a `name-ref` to *every* entity bearing that name (at most one per space), and the response
-  enumerates each minted pointer.
+  enumerates each minted reblade.
 
 ### 1.4 Transactions
 
@@ -40,7 +40,7 @@ the autoexport exporter child's single small per-export transaction (§3.18).
   Any failure → `ROLLBACK`. Fail-closed: a partial write is never observable.
 - `batch` is one transaction spanning N ops applied **in order**; later ops observe earlier
   ops' effects (including auto-linking against them).
-- Reads (`get`, `search`, `list`, `pointers_of`, `follow`, `history`) are side-effect-free:
+- Reads (`get`, `search`, `list`, `reblades_of`, `follow`, `history`) are side-effect-free:
   they mint no logs and no `log_refs`.
 
 ### 1.5 System-minted logs **[resolution d]**
@@ -48,13 +48,13 @@ the autoexport exporter child's single small per-export transaction (§3.18).
 Every write transaction mints, in the same transaction:
 
 - **One `logs` row**: `title` = short summary (e.g. `chain_put "The Forge"`),
-  `area` = primary space (`chain` | `section` | `blade` | `pointer` | `open_item` |
+  `area` = primary space (`chain` | `intention` | `blade` | `reblade` | `open_item` |
   `ruling` | `term` | `mixed` | `autoexport`), `body` = canonical JSON describing the change
   (per-op records: op, target UUID/name, fields changed with old→new where available).
 - **`log_refs` rows**: one per UUID whose row was created / modified / deleted, or that new
   data in the transaction references without changing it:
   `op` ∈ `created` | `modified` | `deleted` | `referenced`.
-  (`referenced` = e.g. the endpoints of a new pointer row.)
+  (`referenced` = e.g. the endpoints of a new reblade row.)
 
 The settled verb surface has **no log-write verb**: the timeline is the mechanical trace of the
 system's own footprint. Agent-authored narrative log entries would be a 19th verb — open, not
@@ -65,56 +65,56 @@ part of v1 (see §5).
 - **Triggers:** blade text writes — `blade_insert`, `blade_edit`, and their `batch` forms.
   (`chain_put` carries no body text, so names written there do not link.)
 - **Exact matches:** each token of the written text equal to a registered alias
-  (case-insensitive) mints a `name-ref` pointer from the written blade to that entity.
+  (case-insensitive) mints a `name-ref` reblade from the written blade to that entity.
   Idempotent: an existing `(src, dst, kind)` is not duplicated.
 - **Candidates:** registered aliases that do *not* exact-match but fuzzy-match some token —
   the alias begins with a token of ≥ 4 chars, or Levenshtein distance ≤ 2 to a token —
   are returned in the response (max 5, each with the token that triggered it).
   **Never linked silently.**
-- **Reconciliation** (`blade_edit`): the blade's outgoing `name-ref` pointers are recomputed
+- **Reconciliation** (`blade_edit`): the blade's outgoing `name-ref` reblades are recomputed
   from scratch; stale ones are deleted, new ones minted. Both lists appear in the response.
-- Registered alias set = the name columns of all six entity tables (chain names, section names,
+- Registered alias set = the name columns of all six entity tables (chain names, intention names,
   open item names, ruling names, ruling numbers, terms).
 
-### 1.7 Pointer endpoints
+### 1.7 Reblade endpoints
 
-- A valid endpoint is any UUID resolving in `chain_headers`, `chain_blades`, `chain_sections`,
-  `open_items`, `rulings`, or `terms`. Pointers, logs, and state registers are **not** endpoints.
-- `pointers.src_uuid` / `dst_uuid` are validated **by the server**, not by foreign keys —
+- A valid endpoint is any UUID resolving in `chain_headers`, `chain_blades`, `chain_intentions`,
+  `open_items`, `rulings`, or `terms`. Reblades, logs, and state registers are **not** endpoints.
+- `reblades.src_uuid` / `dst_uuid` are validated **by the server**, not by foreign keys —
   the endpoint space is polymorphic.
-- Pointers carry **no UUID of their own**; identity is `(src_uuid, dst_uuid, kind)`
+- Reblades carry **no UUID of their own**; identity is `(src_uuid, dst_uuid, kind)`
   **[resolution a]** — consistent with the settled endpoint enumeration.
-- Deleting a chain or blade cascade-deletes its **outgoing** pointers and **reports** incoming
+- Deleting a chain or blade cascade-deletes its **outgoing** reblades and **reports** incoming
   ones in the response (they may still be meaningful; retarget or remove explicitly).
-- `chain_merge` retargets pointers aimed at the dissolved header onto the survivor; the
+- `chain_merge` retargets reblades aimed at the dissolved header onto the survivor; the
   dissolved UUID stops resolving (recoverable via its `log_refs` trace → `history`).
 
 ### 1.8 Invariants (enforced server-side, inside the write transaction)
 
 - `blade_order.pos` is **gapless 0..n−1 per chain**; re-established in the same transaction as
   any blade insert / delete / move / split / merge.
-- Section membership writes and the owning chain's `updated` are always written together.
+- Intention membership writes and the owning chain's `updated` are always written together.
 - Auto-log (§1.5) and auto-linking (§1.6) are part of the write transaction, not afterthoughts.
 - `logs` is append-only: no verb updates or deletes a log row or its `log_refs`.
 
-### 1.9 Vambrace routing (multi-vault)
+### 1.9 Vambrace routing (multi-armory)
 
-- Every entity lives in a **vault** — one Qatena database file. The vault dir comes from the
-  `QATENA_VAULTS` environment variable (default `./.qatena`); the server creates it at startup.
-  A vault file is `<vault_dir>/<key>.db`.
-- A vault is created only by the `vambrace` verb, `action: "create"` (§3.18): it mints a UUIDv7,
+- Every entity lives in an **armory** — one Qatena database file. The armory dir comes from the
+  `QATENA_ARMORIES` environment variable (default `./.qatena`); the server creates it at startup.
+  An armory file is `<armory_dir>/<key>.db`.
+- An armory is created only by the `vambrace` verb, `action: "equip"` (§3.18): it mints a UUIDv7,
   instantiates `<key>.db`, bootstraps its schema, and returns exactly
-  `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vault's **routing key**.
+  `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the armory's **routing key**.
 - Every other verb takes a **required** `vambrace` argument = the routing key. Key format:
   36-char lowercase hyphenated, version nibble 7 —
   `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`.
-- **Fail closed; no default vault, ever.** Missing key → `missing_vambrace`; malformed key →
-  `malformed_vambrace`; well-formed key with no file in the vault dir → `unknown_vambrace`.
-  The server never silently creates a vault or falls back to another.
-- Routing state is the files themselves — a scan / existence check in the vault dir. No in-memory
-  registry: routing survives server restart. Each call opens a fresh connection to its vault.
+- **Fail closed; no default armory, ever.** Missing key → `missing_vambrace`; malformed key →
+  `malformed_vambrace`; well-formed key with no file in the armory dir → `unknown_vambrace`.
+  The server never silently creates an armory or falls back to another.
+- Routing state is the files themselves — a scan / existence check in the armory dir. No in-memory
+  registry: routing survives server restart. Each call opens a fresh connection to its armory.
 - `QATENA_DB` (the old single-database env var, default `./.qatena/qatena.db`) is **retired** —
-  replaced by `QATENA_VAULTS`.
+  replaced by `QATENA_ARMORIES`.
 
 ## 2. DDL
 
@@ -137,7 +137,7 @@ CREATE TABLE chain_headers (
   updated INTEGER NOT NULL
 );
 
-CREATE TABLE chain_sections (
+CREATE TABLE chain_intentions (
   id          TEXT(36) NOT NULL PRIMARY KEY,       -- UUIDv7
   name        TEXT    NOT NULL UNIQUE COLLATE NOCASE,
   orientation TEXT    NOT NULL CHECK (orientation IN ('W', 'B')),
@@ -146,12 +146,12 @@ CREATE TABLE chain_sections (
   updated     INTEGER NOT NULL
 );
 
-CREATE TABLE chain_section_map (
+CREATE TABLE chain_intention_map (
   chain_id   TEXT(36) NOT NULL REFERENCES chain_headers(id)  ON DELETE CASCADE,
-  section_id TEXT(36) NOT NULL REFERENCES chain_sections(id) ON DELETE CASCADE,
-  PRIMARY KEY (chain_id, section_id)
+  intention_id TEXT(36) NOT NULL REFERENCES chain_intentions(id) ON DELETE CASCADE,
+  PRIMARY KEY (chain_id, intention_id)
 );
-CREATE INDEX idx_csm_section ON chain_section_map (section_id);
+CREATE INDEX idx_csm_intention ON chain_intention_map (intention_id);
 
 CREATE TABLE chain_blades (
   id       TEXT(36) NOT NULL PRIMARY KEY,          -- UUIDv7
@@ -171,28 +171,28 @@ CREATE TABLE blade_order (
   UNIQUE (chain_id, blade_id)
 );
 
-CREATE TABLE pointer_kinds (                        -- seeded register, extensible **[resolution b]**
+CREATE TABLE reblade_kinds (                        -- seeded register, extensible **[resolution b]**
   kind TEXT NOT NULL PRIMARY KEY
 );
-INSERT INTO pointer_kinds (kind) VALUES
+INSERT INTO reblade_kinds (kind) VALUES
   ('name-ref'), ('supersedes'), ('part-of'), ('source'), ('see');
 
-CREATE TABLE pointers (
+CREATE TABLE reblades (
   src_uuid TEXT(36) NOT NULL,   -- endpoint, validated server-side (polymorphic)
   dst_uuid TEXT(36) NOT NULL,
-  kind     TEXT    NOT NULL REFERENCES pointer_kinds(kind),
+  kind     TEXT    NOT NULL REFERENCES reblade_kinds(kind),
   note     TEXT,
   created  INTEGER NOT NULL,
   PRIMARY KEY (src_uuid, dst_uuid, kind)
 );
-CREATE INDEX idx_pointers_dst ON pointers (dst_uuid);
+CREATE INDEX idx_reblades_dst ON reblades (dst_uuid);
 ```
 
 ### Non-core (creative-project tracking)
 
 ```sql
 CREATE TABLE logs (
-  id      INTEGER PRIMARY KEY AUTOINCREMENT,  -- dense, monotonic, append-only; never a pointer endpoint
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,  -- dense, monotonic, append-only; never a reblade endpoint
   created INTEGER NOT NULL,
   title   TEXT,
   area    TEXT,
@@ -261,7 +261,7 @@ CREATE TABLE autoexport_registers (
 ```
 
 **Indexing notes.** The UNIQUE alias columns give implicit indexes. Beyond PKs, only two
-explicit indexes exist (`idx_csm_section`, `idx_pointers_dst`, `idx_logs_created`,
+explicit indexes exist (`idx_csm_intention`, `idx_reblades_dst`, `idx_logs_created`,
 `idx_log_refs_uuid`, `idx_blades_chain`); all tables are personal-project scale — no
 speculative indexes. `search` is LIKE-probe based in v1 (FTS5 is a later optimization, §5).
 
@@ -273,9 +273,9 @@ speculative indexes. `search` is LIKE-probe based in v1 (FTS5 is a later optimiz
   pattern `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 - **iso** — `string`, ISO-8601 UTC with milliseconds (`2026-11-27T06:31:00.123Z`)
 - **kind enum** — `["name-ref", "supersedes", "part-of", "source", "see"]`
-- **entity spaces** — `chain | section | blade | open_item | ruling | term | log`
+- **entity spaces** — `chain | intention | blade | open_item | ruling | term | log`
 - **vambrace** — `string`, the routing key: the UUIDv7 returned by `vambrace`
-  (`action: "create"`, §3.18); pattern
+  (`action: "equip"`, §3.18); pattern
   `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`. Required on every verb
   except `vambrace` itself (§1.9).
 
@@ -291,7 +291,7 @@ an idempotent upsert, not an error.
 // write verbs:
 {
   "log_id": 128,                          // the minted logs row
-  "...": "changed entity echo — composite for chains (header + ordered blades + section names), bare record otherwise",
+  "...": "changed entity echo — composite for chains (header + ordered blades + intention names), bare record otherwise",
   "minted":     [ {"src": "…", "dst": "…", "kind": "name-ref"} ],   // auto-linking ops only
   "candidates": [ {"name": "…", "space": "chain", "token": "…"} ]   // auto-linking ops only
 }
@@ -316,14 +316,14 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "chain_put",
-  "description": "Create or update a chain (note). Address by id or name; if neither matches, a fresh UUIDv7 is minted and the name is required. Presence-mask: only supplied fields change. Sections, if present, replace membership with exactly this set and upsert each section by name (absent sections are created; orientation defaults to 'B', or the value given; an existing section's orientation updates only if supplied). Returns the chain composite and the minted log id.",
+  "description": "Create or update a chain (note). Address by id or name; if neither matches, a fresh UUIDv7 is minted and the name is required. Presence-mask: only supplied fields change. Intentions, if present, replace membership with exactly this set and upsert each intention by name (absent intentions are created; orientation defaults to 'B', or the value given; an existing intention's orientation updates only if supplied). Returns the chain composite and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Chain uuid. Takes precedence over name." },
       "name": { "type": "string", "minLength": 1, "description": "Chain name (alias). Unique within the chain space, case-insensitive." },
-      "sections": {
+      "intentions": {
         "type": "array",
         "items": {
           "type": "object",
@@ -333,7 +333,7 @@ change. Renames and refiling are just this.
           },
           "required": ["name"]
         },
-        "description": "If present, replaces the chain's section membership with exactly this set. Sections are upserted by name."
+        "description": "If present, replaces the chain's intention membership with exactly this set. Intentions are upserted by name."
       }
     },
     "minProperties": 1,
@@ -347,11 +347,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "chain_delete",
-  "description": "Delete a chain by id or name. Blades and section memberships are cascade-deleted; outgoing pointers are cascade-deleted and incoming pointers are preserved and reported in the response (they may still be meaningful). Returns the list of incoming pointers and the minted log id.",
+  "description": "Delete a chain by id or name. Blades and intention memberships are cascade-deleted; outgoing reblades are cascade-deleted and incoming reblades are preserved and reported in the response (they may still be meaningful). Returns the list of incoming reblades and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "name": { "type": "string", "minLength": 1 }
     },
@@ -366,15 +366,20 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "chain_split",
-  "description": "Carve a set of blades out of a source chain into a new chain. Blade UUIDs and their pointers travel intact. Blades are removed from the source and appended to the new chain in the order listed. The new chain's sections are set from the optional sections param (upsert semantics, as in chain_put). Returns both chain composites and the minted log id.",
+  "description": "Carve a set of blades out of a source chain into a new chain. Blade UUIDs and their reblades travel intact. Blades are removed from the source and appended to the new chain in the order listed. The new chain's intentions are set from the optional intentions param (upsert semantics, as in chain_put). Returns both chain composites and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "source": { "type": "string", "description": "Source chain id or name." },
-      "blades": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Blade UUIDs to move, in the order they should appear in the new chain." },
+      "blades": {
+        "type": "array",
+        "items": { "type": "string" },
+        "minItems": 1,
+        "description": "Blade UUIDs to move, in the order they should appear in the new chain."
+      },
       "name": { "type": "string", "minLength": 1, "description": "Name for the new chain." },
-      "sections": {
+      "intentions": {
         "type": "array",
         "items": {
           "type": "object",
@@ -384,7 +389,7 @@ change. Renames and refiling are just this.
           },
           "required": ["name"]
         },
-        "description": "Optional initial section membership for the new chain."
+        "description": "Optional initial intention membership for the new chain."
       }
     },
     "required": ["vambrace", "source", "blades", "name"]
@@ -397,11 +402,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "chain_merge",
-  "description": "Fold one chain into a survivor. The dissolved chain's blades are appended to the survivor in their order; section memberships are unioned into the survivor; pointers aimed at the dissolved header are retargeted onto the survivor; the dissolved header's UUID stops resolving (recoverable via history on that UUID). Blade UUIDs and their pointers are unchanged. Returns the survivor composite, the retargeted pointers, and the minted log id.",
+  "description": "Fold one chain into a survivor. The dissolved chain's blades are appended to the survivor in their order; intention memberships are unioned into the survivor; reblades aimed at the dissolved header are retargeted onto the survivor; the dissolved header's UUID stops resolving (recoverable via history on that UUID). Blade UUIDs and their reblades are unchanged. Returns the survivor composite, the retargeted reblades, and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "into": { "type": "string", "description": "Surviving chain id or name." },
       "fold": { "type": "string", "description": "Chain to dissolve (id or name)." }
     },
@@ -415,11 +420,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "blade_insert",
-  "description": "Insert a blade into a chain at a 0-based index (default: end). Runs auto-linking: exact name matches mint name-ref pointers; near-matches are returned as candidates (never linked). Returns the new blade UUID, its index, minted pointers, candidates, and the minted log id.",
+  "description": "Insert a blade into a chain at a 0-based index (default: end). Runs auto-linking: exact name matches mint name-ref reblades; near-matches are returned as candidates (never linked). Returns the new blade UUID, its index, minted reblades, candidates, and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "chain": { "type": "string", "description": "Target chain id or name." },
       "text": { "type": "string", "minLength": 1 },
       "index": { "type": "integer", "minimum": 0, "description": "0-based position; omitted = append. Must be <= current blade count." }
@@ -434,11 +439,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "blade_edit",
-  "description": "Replace a blade's text by UUID. Reconciles the blade's outgoing name-ref pointers: stale ones are deleted, new exact matches minted; near-matches returned as candidates. Returns the updated blade, minted/deleted pointers, candidates, and the minted log id.",
+  "description": "Replace a blade's text by UUID. Reconciles the blade's outgoing name-ref reblades: stale ones are deleted, new exact matches minted; near-matches returned as candidates. Returns the updated blade, minted/deleted reblades, candidates, and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
       "text": { "type": "string", "minLength": 1 }
     },
@@ -452,11 +457,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "blade_move",
-  "description": "Move a blade to a new position within its chain, or to another chain. blade_order is re-established gapless in the same transaction. The blade's UUID and pointers are unchanged. Returns the blade's new chain and index and the minted log id.",
+  "description": "Move a blade to a new position within its chain, or to another chain. blade_order is re-established gapless in the same transaction. The blade's UUID and reblades are unchanged. Returns the blade's new chain and index and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
       "to_chain": { "type": "string", "description": "Destination chain id or name; omitted = same chain." },
       "index": { "type": "integer", "minimum": 0, "description": "0-based destination position, measured after removal; omitted = end." }
@@ -471,11 +476,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "blade_delete",
-  "description": "Delete a blade by UUID. Its outgoing pointers are cascade-deleted; incoming pointers are preserved and reported. blade_order is re-established gapless in the same transaction. Returns the incoming pointers and the minted log id.",
+  "description": "Delete a blade by UUID. Its outgoing reblades are cascade-deleted; incoming reblades are preserved and reported. blade_order is re-established gapless in the same transaction. Returns the incoming reblades and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." }
     },
     "required": ["vambrace", "id"]
@@ -488,25 +493,19 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "batch",
-  "description": "Execute a list of write ops (chain_put, chain_delete, chain_split, chain_merge, blade_insert, blade_edit, blade_move, blade_delete, pointer_add, pointer_remove) atomically: one transaction, all-or-nothing, applied in order. Later ops observe earlier ops' effects, including auto-linking. Returns per-op results (with minted/candidates where applicable) and the single minted log id. Any op failure rolls back the whole batch.",
+  "description": "Execute a list of write ops (chain_put, chain_delete, chain_split, chain_merge, blade_insert, blade_edit, blade_move, blade_delete, reblade_add, reblade_remove) atomically: one transaction, all-or-nothing, applied in order. Later ops observe earlier ops' effects, including auto-linking. Returns per-op results (with minted/candidates where applicable) and the single minted log id. Any op failure rolls back the whole batch.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "ops": {
         "type": "array",
         "minItems": 1,
         "items": {
           "type": "object",
           "properties": {
-            "op": {
-              "type": "string",
-              "enum": ["chain_put", "chain_delete", "chain_split", "chain_merge", "blade_insert", "blade_edit", "blade_move", "blade_delete", "pointer_add", "pointer_remove"]
-            },
-            "args": {
-              "type": "object",
-              "description": "Arguments for this op, with the shape of the standalone verb's input, except the routing key, which is supplied once as this batch's vambrace argument."
-            }
+            "op": { "type": "string", "enum": ["chain_put", "chain_delete", "chain_split", "chain_merge", "blade_insert", "blade_edit", "blade_move", "blade_delete", "reblade_add", "reblade_remove"] },
+            "args": { "type": "object", "description": "Arguments for this op, with the shape of the standalone verb's input, except the routing key, which is supplied once as this batch's vambrace argument." }
           },
           "required": ["op", "args"]
         }
@@ -517,16 +516,16 @@ change. Renames and refiling are just this.
 }
 ```
 
-### 3.10 `pointer_add`
+### 3.10 `reblade_add`
 
 ```json
 {
-  "name": "pointer_add",
-  "description": "Create an explicit typed link between two UUIDs. kind is the semantic relationship, never the endpoint type (that is implicit in the UUID). Endpoints must resolve in the tracked entity space (logs and registers are not endpoints). Idempotent on (src, dst, kind): an existing pointer is returned, not duplicated. Returns the pointer and the minted log id.",
+  "name": "reblade_add",
+  "description": "Create an explicit typed link between two UUIDs. kind is the semantic relationship, never the endpoint type (that is implicit in the UUID). Endpoints must resolve in the tracked entity space (logs and registers are not endpoints). Idempotent on (src, dst, kind): an existing reblade is returned, not duplicated. Returns the reblade and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] },
@@ -537,16 +536,16 @@ change. Renames and refiling are just this.
 }
 ```
 
-### 3.11 `pointer_remove`
+### 3.11 `reblade_remove`
 
 ```json
 {
-  "name": "pointer_remove",
-  "description": "Remove the pointer identified by (src, dst, kind). Errors with not_found if absent. Returns the removed pointer and the minted log id.",
+  "name": "reblade_remove",
+  "description": "Remove the reblade identified by (src, dst, kind). Errors with not_found if absent. Returns the removed reblade and the minted log id.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
@@ -561,11 +560,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "get",
-  "description": "Fetch any tracked entity by UUID. Chains return the composite: header, ordered blades (UUID, index, text), and section names. Blades return the blade plus its chain's name. Sections, open items, rulings, and terms return their bare records. A dissolved (merged) UUID returns not_found; the dissolving merge is recoverable via history on that UUID.",
+  "description": "Fetch any tracked entity by UUID. Chains return the composite: header, ordered blades (UUID, index, text), and intention names. Blades return the blade plus its chain's name. Intentions, open items, rulings, and terms return their bare records. A dissolved (merged) UUID returns not_found; the dissolving merge is recoverable via history on that UUID.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
     },
     "required": ["vambrace", "id"]
@@ -578,15 +577,20 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "search",
-  "description": "Multi-probe union search across entity spaces: chain names, blade text, section names, open item names/text, ruling numbers/names/bodies, term names/definitions, log titles/bodies. Probes are OR'd (substring, case-insensitive). Results are unioned, each with its entity space, UUID, name, and a context window around the match. Returns up to limit hits.",
+  "description": "Multi-probe union search across entity spaces: chain names, blade text, intention names, open item names/text, ruling numbers/names/bodies, term names/definitions, log titles/bodies. Probes are OR'd (substring, case-insensitive). Results are unioned, each with its entity space, UUID, name, and a context window around the match. Returns up to limit hits.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
-      "probes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "description": "Search terms; unioned across spaces." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "probes": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "minItems": 1,
+        "description": "Search terms; unioned across spaces."
+      },
       "spaces": {
         "type": "array",
-        "items": { "type": "string", "enum": ["chain", "blade", "section", "open_item", "ruling", "term", "log"] },
+        "items": { "type": "string", "enum": ["chain", "blade", "intention", "open_item", "ruling", "term", "log"] },
         "description": "Restrict to these entity spaces; omitted = all."
       },
       "context": { "type": "integer", "minimum": 0, "description": "Characters of context on each side of a match. Default 120." },
@@ -602,16 +606,16 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "list",
-  "description": "List an entity space with filters. Returns bare records (chains as headers plus section names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: section (name), name_prefix; sections: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); any space: name_prefix where the space has a name/alias field.",
+  "description": "List an entity space with filters. Returns bare records (chains as headers plus intention names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: intention (name), name_prefix; intentions: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); any space: name_prefix where the space has a name/alias field.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
-      "space": { "type": "string", "enum": ["chain", "section", "open_item", "ruling", "term", "log"] },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
+      "space": { "type": "string", "enum": ["chain", "intention", "open_item", "ruling", "term", "log"] },
       "filter": {
         "type": "object",
         "properties": {
-          "section": { "type": "string" },
+          "intention": { "type": "string" },
           "orientation": { "type": "string", "enum": ["W", "B"] },
           "state": { "type": "string" },
           "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
@@ -629,16 +633,16 @@ change. Renames and refiling are just this.
 }
 ```
 
-### 3.15 `pointers_of`
+### 3.15 `reblades_of`
 
 ```json
 {
-  "name": "pointers_of",
-  "description": "Incoming and/or outgoing pointers for a UUID, filterable by kind. Each edge is returned as {src, dst, kind, note, created} with both endpoints resolved: their entity space and name.",
+  "name": "reblades_of",
+  "description": "Incoming and/or outgoing reblades for a UUID, filterable by kind. Each edge is returned as {src, dst, kind, note, created} with both endpoints resolved: their entity space and name.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "direction": { "type": "string", "enum": ["in", "out", "both"], "description": "Default both." },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
@@ -653,11 +657,11 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "follow",
-  "description": "Multi-hop traversal from a UUID through the pointer graph. Returns visited nodes {uuid, name, space} with the edge kinds traversed, up to max_hops. Cycles are detected and pruned. Chain nodes include blades only if expand_chains.",
+  "description": "Multi-hop traversal from a UUID through the reblade graph. Returns visited nodes {uuid, name, space} with the edge kinds traversed, up to max_hops. Cycles are detected and pruned. Chain nodes include blades only if expand_chains.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "from": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "direction": { "type": "string", "enum": ["out", "in", "both"], "description": "Default out." },
       "kinds": {
@@ -682,7 +686,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default armory." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "limit": { "type": "integer", "minimum": 1, "description": "Default 20." }
     },
@@ -693,20 +697,20 @@ change. Renames and refiling are just this.
 
 ### 3.18 `vambrace`
 
-Create and route vaults. `action: "create"` mints a UUIDv7, instantiates an empty Qatena database
-file named `<UUIDv7>.db` in the vault dir, bootstraps its schema, and returns exactly
-`{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vault's routing key, the required `vambrace`
-argument of every other verb. `create` is the only key-less action.
+Create and route armories. `action: "equip"` mints a UUIDv7, instantiates an empty Qatena database
+file named `<UUIDv7>.db` in the armory dir, bootstraps its schema, and returns exactly
+`{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the armory's routing key, the required `vambrace`
+argument of every other verb. `equip` is the only key-less action.
 
 `register_autoexport`, `deregister_autoexport`, and `export` are **key-bearing** actions: alongside
-`action` they take the vault's routing key as the `vambrace` argument, validated fail-closed
+`action` they take the armory's routing key as the `vambrace` argument, validated fail-closed
 exactly like a routed verb (§1.9 — `missing_vambrace` / `malformed_vambrace` /
 `unknown_vambrace`), plus the fields below. Any other action fails with `unsupported_action`.
 
-**Autoexport.** A register names a *stack* — root + descendants, over section → chain → blade
+**Autoexport.** A register names a *stack* — root + descendants, over intention → chain → blade
 only — and a destination file + format:
 
-- root = **section**: the section + every member chain + every blade of those chains
+- root = **intention**: the intention + every member chain + every blade of those chains
 - root = **chain**: the chain + its blades (in `blade_order`)
 - root = **blade**: the blade itself (a leaf; its parent chain appears in the `md` output as
   presentation context only)
@@ -715,40 +719,40 @@ Every committed write is followed by one post-commit check (one hook in the serv
 write path; `batch` = one check for the whole transaction; read verbs and the register /
 deregister actions themselves are excluded). For each active register the server compares the
 **stack signature** — a stable content-only hash over the ordered stack and the register's
-**pointer layer**: `(root uuid, root space, root name, fidelity mode)` + per chain `(uuid,
-name, sorted section names, [(blade uuid, text)] in pos order)` + the sorted pointer rows —
+**reblade layer**: `(root uuid, root space, root name, fidelity mode)` + per chain `(uuid,
+name, sorted intention names, [(blade uuid, text)] in pos order)` + the sorted reblade rows —
 against the stored `last_sig`. On change, the exporter
-child (`python -m qatena.autoexport <vault> <root> <path> <format>`) is spawned detached; it
+child (`python -m qatena.autoexport <armory> <root> <path> <format>`) is spawned detached; it
 re-reads committed truth, renders the format, and atomically rewrites the file. Timestamps,
-logs, and section orientation are excluded, so no-op upserts do not re-export — but a chain
-refiled into / out of a registered section does (membership is content), and the chain's own
-register re-exports too (its section list is in its signature). A blade root's stack is
+logs, and intention orientation are excluded, so no-op upserts do not re-export — but a chain
+refiled into / out of a registered intention does (membership is content), and the chain's own
+register re-exports too (its intention list is in its signature). A blade root's stack is
 `(uuid, text)` only, so moving a registered blade between chains does not re-export it (a
-move changes no pointer row).
+move changes no reblade row).
 
-**Pointer layer (`pointer_fidelity`).** Each register selects which pointer rows the export
+**Reblade layer (`reblade_fidelity`).** Each register selects which reblade rows the export
 carries, against the stack's **endpoint set** `E` = the root UUID + every chain UUID + every
-blade UUID in the stack (all live pointer endpoints; sections count). Rows are carried as
+blade UUID in the stack (all live reblade endpoints; intentions count). Rows are carried as
 **dead identifiers** — `{src, dst, kind}` + `note` when present — fetched in one query over
-`pointers`; endpoints are never resolved or traversed, so no mode can pull referenced content
+`reblades`; endpoints are never resolved or traversed, so no mode can pull referenced content
 into the export: every export is bounded and non-recursive by construction.
 
-- `none` — no pointer rows (the pre-fidelity pointer-excluded behavior)
+- `none` — no reblade rows (the pre-fidelity reblade-excluded behavior)
 - `out` — rows with `src` in E (the stack's outbound references) — **default**, outward-facing
 - `in` — rows with `dst` in E (backlinks: outside → inside)
 - `both` — rows with either endpoint in E
 
 Each row appears exactly once, sorted by `(src, dst, kind, note)`. Because the layer is
-signed, `pointer_add` / `pointer_remove` re-export exactly the registers whose mode includes
+signed, `reblade_add` / `reblade_remove` re-export exactly the registers whose mode includes
 the row's direction: an outside → inside write never re-exports an `out` register; an inside
 → outside write never re-exports an `in` one. Renaming an external endpoint re-exports
-nothing (no endpoint name is carried). Liveness caveat: the file carries pointer identifiers,
+nothing (no endpoint name is carried). Liveness caveat: the file carries reblade identifiers,
 not endpoint liveness — a deleted external endpoint leaves its UUID in the file until the
-pointer row itself changes.
+reblade row itself changes.
 
-Renderers: `json` gains top-level `pointer_fidelity` + `pointers`; `ndjson` appends
-`{"space": "pointer", "src", "dst", "kind"(, "note")}` lines after the entity lines; `csv`
-`space,uuid,name,src,dst,kind,pos,text,note` (pointer rows leave `uuid`/`name` blank); `md`
+Renderers: `json` gains top-level `reblade_fidelity` + `reblades`; `ndjson` appends
+`{"space": "reblade", "src", "dst", "kind"(, "note")}` lines after the entity lines; `csv`
+`space,uuid,name,src,dst,kind,pos,text,note` (reblade rows leave `uuid`/`name` blank); `md`
 renders outgoing rows as `<!-- kind -> dst -->` comment lines under the owning entity
 (plus `<!-- note: ... -->`), and modes `in` / `both` add a trailing `## Inbound` block of
 `- src [kind] -> dst` rows — in `both`, a row with both endpoints inside the stack renders
@@ -756,13 +760,13 @@ exactly once (under its `src` owner), never duplicated into the block.
 
 `register_autoexport` (key-bearing):
 
-- `root` — must resolve to a LIVE `section` / `chain` / `blade`. Other entity spaces →
+- `root` — must resolve to a LIVE `intention` / `chain` / `blade`. Other entity spaces →
   `validation_failed`; unknown / dissolved UUID → `not_found`.
 - `emit_path` — used exactly as given; non-empty, parent directory must exist
   (`validation_failed` otherwise).
 - `emit_format` — one of `md` | `csv` | `json` | `ndjson` (`validation_failed` otherwise).
-- `pointer_fidelity` (optional) — one of `none` | `in` | `out` | `both`
-  (`validation_failed` otherwise); see the pointer layer above. **Presence-masked**: omitted
+- `reblade_fidelity` (optional) — one of `none` | `in` | `out` | `both`
+  (`validation_failed` otherwise); see the reblade layer above. **Presence-masked**: omitted
   at creation → `out`; omitted on re-register → keep the stored value.
 - Upsert on identity `(root_uuid, emit_path)`: re-registering the same root + path with a
   different format **or** fidelity REPLACES it (`replaced: true` in the response).
@@ -770,7 +774,7 @@ exactly once (under its `src` owner), never duplicated into the block.
   `exported: false` + `export_error` on failure — the register row is kept and the export
   self-heals on the next changed write.
 - Mints one log row (area `autoexport`). Response:
-  `{root, root_space, emit_path, emit_format, pointer_fidelity, stack: {chains, blades},
+  `{root, root_space, emit_path, emit_format, reblade_fidelity, stack: {chains, blades},
   exported, exported_at (iso), replaced, log_id}`.
 
 `deregister_autoexport` (key-bearing): deletes the register row for `(root, emit_path)`
@@ -779,45 +783,45 @@ exactly once (under its `src` owner), never duplicated into the block.
 never deletes user files.
 
 `export` (key-bearing): one-shot export — the same fields as `register_autoexport`
-(`root`, `emit_path`, `emit_format`, optional `pointer_fidelity`), executed immediately with
-**no vault mutation**: the vault opens **read-only**, and no register row, log row, `log_refs`,
-or stored signature is written. `pointer_fidelity` here is the explicit pointer layer for this
+(`root`, `emit_path`, `emit_format`, optional `reblade_fidelity`), executed immediately with
+**no armory mutation**: the armory opens **read-only**, and no register row, log row, `log_refs`,
+or stored signature is written. `reblade_fidelity` here is the explicit reblade layer for this
 one render (default `out`) — there is **no presence-masking**: the register row is never
 consulted. The file lands via the same atomic mechanism as the exporter child (shared
 `write_export`: temp + `os.replace`). Response:
-`{root, root_space, emit_path, emit_format, pointer_fidelity, stack: {chains, blades},
+`{root, root_space, emit_path, emit_format, reblade_fidelity, stack: {chains, blades},
 exported: true, exported_at (iso)}` — deliberately **no `replaced`, no `log_id`** (nothing was
 registered, nothing was logged). Errors: unresolvable root → `not_found`; root space not
-stackable (section/chain/blade) → `validation_failed`; file-write failure → `export_failed`;
+stackable (intention/chain/blade) → `validation_failed`; file-write failure → `export_failed`;
 sqlite → `db_error`.
 
 **Export lifecycle (convention).** Re-exports are sig-gated: the file is rewritten only when
 the stack signature actually changed. Self-healing: any failed export (disk full, path lost,
 crash) leaves `last_sig` stale, so the next changed write re-triggers automatically — no queue,
 no retry bookkeeping. The exporter child is the one sanctioned exception to the sole-write
-surface: it opens the vault **read-only** (first re-reading its own register row — absent,
+surface: it opens the armory **read-only** (first re-reading its own register row — absent,
 i.e. deregistered in flight, is a clean no-op: no file write, no log), then does exactly one
 small read-write transaction (store `last_sig` / `last_emitted`, mint the export log row —
 area `autoexport`, title `autoexport <root-space> <root-uuid> -> <emit_path>`, root ref op
 `referenced`). Cascade: deleting a registered root (`chain_delete` / `blade_delete`) deletes
 its register rows in the same transaction — a dead root can never re-trigger, and UUIDs are
-never reused. Pre-existing vaults (bootstrapped before `pointer_fidelity`) are migrated in
+never reused. Pre-existing armories (bootstrapped before `reblade_fidelity`) are migrated in
 place by `schema.bootstrap` on next open: the column is added with default `out`,
 idempotently.
 
 ```json
 {
   "name": "vambrace",
-  "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live section/chain/blade stack to emit_path immediately, read-only against the vault (no register row, no log, no stored signature). See SPEC 3.18.",
+  "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the armory's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing armory actions: alongside 'action' they take the armory's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the armory (no register row, no log, no stored signature). See SPEC 3.18.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "action": { "type": "string", "enum": ["create", "register_autoexport", "deregister_autoexport", "export"], "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live section/chain/blade stack to emit_path, read-only against the vault (no register row, no log, no signature); pointer_fidelity selects the pointer layer for this render (default out)." },
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the vault's routing key (returned by action=create). Not used by create." },
-      "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE section, chain, or blade (register / export); the registered root (deregister). Not used by create." },
-      "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by create." },
-      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by create or deregister." },
-      "pointer_fidelity": { "type": "string", "enum": ["none", "in", "out", "both"], "description": "For register_autoexport and export only: pointer layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by create or deregister." }
+      "action": { "type": "string", "enum": ["equip", "register_autoexport", "deregister_autoexport", "export"], "description": "equip: key-less — mints a new armory. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the armory routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the armory (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)." },
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the armory's routing key (returned by action=equip). Not used by equip." },
+      "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE intention, chain, or blade (register / export); the registered root (deregister). Not used by equip." },
+      "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by equip." },
+      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister." },
+      "reblade_fidelity": { "type": "string", "enum": ["none", "in", "out", "both"], "description": "For register_autoexport and export only: reblade layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by equip or deregister." }
     },
     "required": ["action"]
   }
@@ -825,17 +829,17 @@ idempotently.
 ```
 
 The key-bearing actions' `vambrace` argument is the routing key itself (§1.9); the schema
-carries it as an optional property (UUIDv7 pattern) — `create` takes no key, so it is omitted
+carries it as an optional property (UUIDv7 pattern) — `equip` takes no key, so it is omitted
 there — and it is validated fail-closed exactly like every routed verb.
 
 ## 4. Migration notes (source → Qatena)
 
-- Migration output lands in a vault created by the `vambrace` verb (`action: "create"`); there is
+- Migration output lands in an armory created by the `vambrace` verb (`action: "equip"`); there is
   no separate migration database path, and `QATENA_DB` is retired (§1.9).
 - Source pins → `chain_headers` (+ blades from split points; migration script's problem, not the schema's).
-- Source `pins` prose references → `pointers` rows (`name-ref` for bare mentions; `source` /
+- Source `pins` prose references → `reblades` rows (`name-ref` for bare mentions; `source` /
   `part-of` where the prose is structural).
-- Source `open_items.refs` and `ruling_tags` → dissolved into `pointers` (the one-graph design).
+- Source `open_items.refs` and `ruling_tags` → dissolved into `reblades` (the one-graph design).
 - Source log rows → `logs` with `log_refs` backfilled where the prose identifies affected
   entities; unidentifiable entries get no refs.
 - State registers are seeded as in §2; unknown source state strings are a migration error, not a silent passthrough.
@@ -846,5 +850,5 @@ there — and it is validated fail-closed exactly like every routed verb.
 2. **`history` mechanism** — field-level old→new audit (tables/triggers), contract reserved.
 3. **Agent-authored log entries** — a 19th verb, if wanted; v1's `logs` are system-minted only.
 4. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale.
-5. **`SPEC.md` resolutions (a)–(f) pending review** — pointers carry no UUID (§1.7) · `pointer_kinds` register (§2) · sections upserted via `chain_put.sections` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
-6. **`vambrace` actions beyond `create`** — list / destroy / label, etc.; deliberately deferred until the project is close to finalizing. (`register_autoexport` / `deregister_autoexport` are built, §3.18.)
+5. **`SPEC.md` resolutions (a)–(f) pending review** — reblades carry no UUID (§1.7) · `reblade_kinds` register (§2) · intentions upserted via `chain_put.intentions` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
+6. **`vambrace` actions beyond `equip`** — list / destroy / label, etc.; deliberately deferred until the project is close to finalizing. (`register_autoexport` / `deregister_autoexport` are built, §3.18.)

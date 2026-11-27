@@ -2,7 +2,7 @@
 
 Unlike register_autoexport, export performs NO database mutations: no
 register row, no log row, no log_refs, no stored signature. The real
-server handlers drive a real vault file (same in-process pattern as
+server handlers drive a real armory file (same in-process pattern as
 test_autoexport.py); QATENA_EXPORT_SYNC=1 is set so the sig-gated
 register re-export path in one test also runs inline and deterministically.
 """
@@ -18,9 +18,9 @@ from helpers import ISO_RE, QatenaTestCase
 class OneShotExportTests(QatenaTestCase):
     def setUp(self):
         super().setUp()
-        # a proper vault file (<key>.db) so the server's key validation passes
+        # a proper armory file (<key>.db) so the server's key validation passes
         self.conn.close()
-        payload, is_err = server._call_vambrace(self._tmp, {"action": "create"})
+        payload, is_err = server._call_vambrace(self._tmp, {"action": "equip"})
         self.assertFalse(is_err, payload)
         self._key = payload["vambrace"]
         self.db_path = os.path.join(self._tmp, self._key + ".db")
@@ -40,30 +40,30 @@ class OneShotExportTests(QatenaTestCase):
         return payload["error"]["code"] if "error" in payload else None
 
     def _export(self, root, emit_path, emit_format="json",
-                pointer_fidelity=None):
+                reblade_fidelity=None):
         args = {"action": "export", "root": root,
                 "emit_path": emit_path, "emit_format": emit_format}
-        if pointer_fidelity is not None:
-            args["pointer_fidelity"] = pointer_fidelity
+        if reblade_fidelity is not None:
+            args["reblade_fidelity"] = reblade_fidelity
         args["vambrace"] = self._key
         return server._call_vambrace(self._tmp, args)
 
     def _register(self, root, emit_path, emit_format="json",
-                  pointer_fidelity=None):
+                  reblade_fidelity=None):
         args = {"action": "register_autoexport", "vambrace": self._key,
                 "root": root, "emit_path": emit_path,
                 "emit_format": emit_format}
-        if pointer_fidelity is not None:
-            args["pointer_fidelity"] = pointer_fidelity
+        if reblade_fidelity is not None:
+            args["reblade_fidelity"] = reblade_fidelity
         return server._call_vambrace(self._tmp, args)
 
     def _write(self, verb, **args):
         return server._call_routed(self._tmp, verb, dict(args, vambrace=self._key))
 
-    def _make_chain(self, name, blades=(), sections=None):
+    def _make_chain(self, name, blades=(), intentions=None):
         args = {"name": name}
-        if sections is not None:
-            args["sections"] = sections
+        if intentions is not None:
+            args["intentions"] = intentions
         res = self.verb("chain_put", **args)
         for text in blades:
             self.verb("blade_insert", chain=res["id"], text=text)
@@ -112,17 +112,17 @@ class OneShotExportTests(QatenaTestCase):
             self.assertEqual(p["root_space"], "chain")
             self.assertEqual(p["emit_path"], out)
             self.assertEqual(p["emit_format"], "json")
-            self.assertEqual(p["pointer_fidelity"], "out")
+            self.assertEqual(p["reblade_fidelity"], "out")
             self.assertEqual(p["stack"], {"chains": 1, "blades": 2})
             self.assertTrue(p["exported"])
             self.assertRegex(p["exported_at"], ISO_RE)
-        with self.subTest("file: json with root/pointer_fidelity/pointers/stack"):
+        with self.subTest("file: json with root/reblade_fidelity/reblades/stack"):
             self.assertTrue(os.path.exists(out))
             doc = json.loads(self._read(out))
             self.assertEqual(doc["root"]["uuid"], cid)
             self.assertEqual(doc["root"]["space"], "chain")
-            self.assertEqual(doc["pointer_fidelity"], "out")
-            self.assertIn("pointers", doc)
+            self.assertEqual(doc["reblade_fidelity"], "out")
+            self.assertIn("reblades", doc)
             self.assertEqual(doc["stack"]["chains"][0]["id"], cid)
             self.assertEqual(len(doc["stack"]["chains"][0]["blades"]), 2)
             self.assertEqual(doc["stack"]["blades"], [])
@@ -174,13 +174,13 @@ class OneShotExportTests(QatenaTestCase):
         i1 = self._blade_id(inside, "i one")
         i2 = self._blade_id(inside, "i two")
         o1 = self._blade_id(outside, "o one")
-        self.verb("pointer_add", src=inside, dst=o1, kind="see")
-        self.verb("pointer_add", src=o1, dst=inside, kind="source")
-        self.verb("pointer_add", src=i1, dst=i2, kind="part-of")
+        self.verb("reblade_add", src=inside, dst=o1, kind="see")
+        self.verb("reblade_add", src=o1, dst=inside, kind="source")
+        self.verb("reblade_add", src=i1, dst=i2, kind="part-of")
 
         def rows(path):
             doc = json.loads(self._read(path))
-            return {(r["src"], r["dst"], r["kind"]) for r in doc["pointers"]}
+            return {(r["src"], r["dst"], r["kind"]) for r in doc["reblades"]}
 
         cases = {
             "none": set(),
@@ -192,17 +192,17 @@ class OneShotExportTests(QatenaTestCase):
         for mode, want in cases.items():
             with self.subTest(mode):
                 out = os.path.join(self._tmp, "f-%s.json" % mode)
-                p, e = self._export(inside, out, pointer_fidelity=mode)
+                p, e = self._export(inside, out, reblade_fidelity=mode)
                 self.assertFalse(e, p)
-                self.assertEqual(p["pointer_fidelity"], mode)
+                self.assertEqual(p["reblade_fidelity"], mode)
                 self.assertEqual(rows(out), want)
 
     def test_export_default_fidelity(self):
         cid = self._make_chain("Alpha", ("first",))
         out = os.path.join(self._tmp, "def.json")
-        p, e = self._export(cid, out)  # pointer_fidelity omitted
+        p, e = self._export(cid, out)  # reblade_fidelity omitted
         self.assertFalse(e, p)
-        self.assertEqual(p["pointer_fidelity"], "out")
+        self.assertEqual(p["reblade_fidelity"], "out")
 
     # -- validation ------------------------------------------------------------
     def test_export_validation(self):
@@ -212,8 +212,8 @@ class OneShotExportTests(QatenaTestCase):
             p, e = self._export(cid, out, emit_format="yaml")
             self.assertTrue(e)
             self.assertEqual(self._code(p), "validation_failed")
-        with self.subTest("bad pointer_fidelity"):
-            p, e = self._export(cid, out, pointer_fidelity="sideways")
+        with self.subTest("bad reblade_fidelity"):
+            p, e = self._export(cid, out, reblade_fidelity="sideways")
             self.assertTrue(e)
             self.assertEqual(self._code(p), "validation_failed")
         with self.subTest("missing root"):
@@ -278,20 +278,20 @@ class OneShotExportTests(QatenaTestCase):
 
     def test_export_root_spaces(self):
         self._make_chain("Alpha", ("first", "second"),
-                         sections=[{"name": "Sec"}])
+                         intentions=[{"name": "Sec"}])
         cid = self.chain_ids("Alpha")[0]
         bid = self._blade_id(cid, "first")
         sid = self.conn.execute(
-            "SELECT id FROM chain_sections WHERE name = ?", ("Sec",)
+            "SELECT id FROM chain_intentions WHERE name = ?", ("Sec",)
         ).fetchone()["id"]
-        with self.subTest("section root"):
+        with self.subTest("intention root"):
             out = os.path.join(self._tmp, "sec.json")
             p, e = self._export(sid, out)
             self.assertFalse(e, p)
-            self.assertEqual(p["root_space"], "section")
+            self.assertEqual(p["root_space"], "intention")
             self.assertEqual(p["stack"], {"chains": 1, "blades": 2})
             doc = json.loads(self._read(out))
-            self.assertEqual(doc["root"]["space"], "section")
+            self.assertEqual(doc["root"]["space"], "intention")
             self.assertEqual(len(doc["stack"]["chains"]), 1)
         with self.subTest("blade root"):
             out = os.path.join(self._tmp, "blade.json")

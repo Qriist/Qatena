@@ -1,14 +1,14 @@
 """Autoexport: stack computation, content-only signatures, renderers, spawn.
 
 A register (autoexport_registers row) names a *stack* — the root plus its
-descendants over section -> chain -> blade only — and a destination file +
+descendants over intention -> chain -> blade only — and a destination file +
 format. The server's post-commit hook compares the current stack signature
 against the stored last_sig; on change it spawns a detached exporter child
-(``python -m qatena.autoexport <vault> <root> <path> <format>``) that
+(``python -m qatena.autoexport <armory> <root> <path> <format>``) that
 re-reads committed truth and atomically rewrites the file (SPEC 3.18).
 
 The child always exports the latest committed state — no data passes over
-IPC. It opens the vault READ-ONLY, renders to a temp file, os.replace()s it
+IPC. It opens the armory READ-ONLY, renders to a temp file, os.replace()s it
 into place, then runs exactly one small read-write transaction (store
 last_sig/last_emitted + mint the export log row). A failed export leaves
 last_sig stale, so the next changed write re-triggers: self-healing with no
@@ -32,21 +32,21 @@ import sys
 from . import db
 
 ALLOWED_FORMATS = ("md", "csv", "json", "ndjson")
-POINTER_FIDELITIES = ("none", "in", "out", "both")
+REBLADE_FIDELITIES = ("none", "in", "out", "both")
 
 
 # ------------------------------------------------------------- stack compute
 
 def _chain_stack(conn, chain_id):
-    """One chain entry: header + sorted section names + blades in pos order."""
+    """One chain entry: header + sorted intention names + blades in pos order."""
     h = conn.execute(
         "SELECT id, name FROM chain_headers WHERE id = ?", (chain_id,)
     ).fetchone()
     secs = [
         r["name"]
         for r in conn.execute(
-            "SELECT s.name FROM chain_section_map m "
-            "JOIN chain_sections s ON s.id = m.section_id "
+            "SELECT s.name FROM chain_intention_map m "
+            "JOIN chain_intentions s ON s.id = m.intention_id "
             "WHERE m.chain_id = ? ORDER BY s.name COLLATE NOCASE",
             (chain_id,),
         )
@@ -61,12 +61,12 @@ def _chain_stack(conn, chain_id):
             (chain_id,),
         )
     ]
-    return {"id": h["id"], "name": h["name"], "sections": secs, "blades": blades}
+    return {"id": h["id"], "name": h["name"], "intentions": secs, "blades": blades}
 
 
 def _endpoint_set(payload):
     """Endpoint set E for a computed stack (SPEC 3.18): the root uuid itself
-    (section, chain, and blade roots all count — sections are a valid pointer
+    (intention, chain, and blade roots all count — intentions are a valid reblade
     endpoint space per SPEC 1.7) + every chain uuid + every blade uuid."""
     e = {payload["root"]["uuid"]}
     for ch in payload["stack"]["chains"]:
@@ -78,10 +78,10 @@ def _endpoint_set(payload):
     return e
 
 
-def _pointer_layer(conn, payload, fidelity):
-    """The register's pointer layer P, filtered by mode (SPEC 3.18).
+def _reblade_layer(conn, payload, fidelity):
+    """The register's reblade layer P, filtered by mode (SPEC 3.18).
 
-    One query over `pointers`; skipped entirely for `none`:
+    One query over `reblades`; skipped entirely for `none`:
       none -> []
       out  -> rows where src_uuid IN E
       in   -> rows where dst_uuid IN E
@@ -94,13 +94,13 @@ def _pointer_layer(conn, payload, fidelity):
     e = _endpoint_set(payload)
     ph = ",".join("?" * len(e))
     if fidelity == "out":
-        sql = f"SELECT src_uuid, dst_uuid, kind, note FROM pointers WHERE src_uuid IN ({ph})"
+        sql = f"SELECT src_uuid, dst_uuid, kind, note FROM reblades WHERE src_uuid IN ({ph})"
         args = list(e)
     elif fidelity == "in":
-        sql = f"SELECT src_uuid, dst_uuid, kind, note FROM pointers WHERE dst_uuid IN ({ph})"
+        sql = f"SELECT src_uuid, dst_uuid, kind, note FROM reblades WHERE dst_uuid IN ({ph})"
         args = list(e)
     else:  # both
-        sql = (f"SELECT src_uuid, dst_uuid, kind, note FROM pointers "
+        sql = (f"SELECT src_uuid, dst_uuid, kind, note FROM reblades "
                f"WHERE src_uuid IN ({ph}) OR dst_uuid IN ({ph})")
         args = list(e) * 2
     rows = conn.execute(sql, args).fetchall()
@@ -118,47 +118,47 @@ def compute_stack(conn, root_uuid, fidelity="out"):
     """Compute the stack rooted at root_uuid, or None if it does not resolve.
 
     Stack definition (SPEC 3.18):
-      root = section: the section + every member chain + every blade of those
+      root = intention: the intention + every member chain + every blade of those
       root = chain:   the chain + its blades (in blade_order)
       root = blade:   the blade itself (a leaf; its chain is shown as
                       presentation context only, never part of the signature)
 
-    fidelity (none | in | out | both) selects the pointer layer P carried in
-    the payload (key "pointers", counted in "counts"["pointers"], and signed
+    fidelity (none | in | out | both) selects the reblade layer P carried in
+    the payload (key "reblades", counted in "counts"["reblades"], and signed
     into the stack signature).
     """
-    if fidelity not in POINTER_FIDELITIES:
+    if fidelity not in REBLADE_FIDELITIES:
         raise ValueError(
-            f"unknown pointer_fidelity {fidelity!r} (allowed: {list(POINTER_FIDELITIES)})"
+            f"unknown reblade_fidelity {fidelity!r} (allowed: {list(REBLADE_FIDELITIES)})"
         )
     base = _compute_stack_base(conn, root_uuid)
     if base is None:
         return None
-    base["pointer_fidelity"] = fidelity
-    base["pointers"] = _pointer_layer(conn, base, fidelity)
-    base["counts"]["pointers"] = len(base["pointers"])
+    base["reblade_fidelity"] = fidelity
+    base["reblades"] = _reblade_layer(conn, base, fidelity)
+    base["counts"]["reblades"] = len(base["reblades"])
     return base
 
 
 def _compute_stack_base(conn, root_uuid):
-    """The stack payload without the pointer layer (see compute_stack)."""
+    """The stack payload without the reblade layer (see compute_stack)."""
     row = conn.execute(
-        "SELECT id, name FROM chain_sections WHERE id = ?", (root_uuid,)
+        "SELECT id, name FROM chain_intentions WHERE id = ?", (root_uuid,)
     ).fetchone()
     if row is not None:
         chain_ids = [
             r["chain_id"]
             for r in conn.execute(
-                "SELECT chain_id FROM chain_section_map WHERE section_id = ? "
+                "SELECT chain_id FROM chain_intention_map WHERE intention_id = ? "
                 "ORDER BY chain_id",
                 (root_uuid,),
             )
         ]
         chains = [_chain_stack(conn, cid) for cid in chain_ids]
         return {
-            "root": {"uuid": row["id"], "space": "section", "name": row["name"]},
+            "root": {"uuid": row["id"], "space": "intention", "name": row["name"]},
             "stack": {
-                "sections": [{"id": row["id"], "name": row["name"]}],
+                "intentions": [{"id": row["id"], "name": row["name"]}],
                 "chains": chains,
                 "blades": [],
             },
@@ -175,7 +175,7 @@ def _compute_stack_base(conn, root_uuid):
         chain = _chain_stack(conn, row["id"])
         return {
             "root": {"uuid": row["id"], "space": "chain", "name": row["name"]},
-            "stack": {"sections": [], "chains": [chain], "blades": []},
+            "stack": {"intentions": [], "chains": [chain], "blades": []},
             "counts": {"chains": 1, "blades": len(chain["blades"])},
         }
 
@@ -199,7 +199,7 @@ def _compute_stack_base(conn, root_uuid):
         # root name = the blade's own text: the blade carries no alias
         return {
             "root": {"uuid": row["id"], "space": "blade", "name": row["text"]},
-            "stack": {"sections": [], "chains": [], "blades": [blade]},
+            "stack": {"intentions": [], "chains": [], "blades": [blade]},
             "counts": {"chains": 0, "blades": 1},
         }
 
@@ -209,24 +209,24 @@ def _compute_stack_base(conn, root_uuid):
 # --------------------------------------------------------------- signatures
 
 def stack_signature(payload):
-    """Stable content-only hash over the ordered stack + pointer layer.
+    """Stable content-only hash over the ordered stack + reblade layer.
 
     (root uuid, root space, root name, MODE) + per chain (uuid, name, sorted
-    section names, [(blade uuid, text)] in pos order) + the sorted pointer
+    intention names, [(blade uuid, text)] in pos order) + the sorted reblade
     rows. The mode is deliberately signed so that changing the mode on a
-    re-register re-exports. Excluded: timestamps, logs, section
+    re-register re-exports. Excluded: timestamps, logs, intention
     orientation/note.
     """
     root = payload["root"]
-    parts = [root["uuid"], root["space"], root["name"], payload["pointer_fidelity"]]
+    parts = [root["uuid"], root["space"], root["name"], payload["reblade_fidelity"]]
     for ch in payload["stack"]["chains"]:
         parts.append([
-            "chain", ch["id"], ch["name"], ch["sections"],
+            "chain", ch["id"], ch["name"], ch["intentions"],
             [[b["id"], b["text"]] for b in ch["blades"]],
         ])
     for b in payload["stack"]["blades"]:
         parts.append(["blade", b["id"], b["text"]])
-    parts.append(payload["pointers"])  # already sorted (src, dst, kind, note or "")
+    parts.append(payload["reblades"])  # already sorted (src, dst, kind, note or "")
     canon = json.dumps(parts, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -237,10 +237,10 @@ def _render_json(payload, exported_at):
     doc = {
         "root": payload["root"],
         "exported_at": exported_at,
-        "pointer_fidelity": payload["pointer_fidelity"],
-        "pointers": payload["pointers"],
+        "reblade_fidelity": payload["reblade_fidelity"],
+        "reblades": payload["reblades"],
         "stack": {
-            "sections": payload["stack"]["sections"],
+            "intentions": payload["stack"]["intentions"],
             "chains": payload["stack"]["chains"],
             "blades": payload["stack"]["blades"],
         },
@@ -250,8 +250,8 @@ def _render_json(payload, exported_at):
 
 def _ndjson_lines(payload):
     lines = []
-    for s in payload["stack"]["sections"]:
-        lines.append({"space": "section", "uuid": s["id"], "name": s["name"]})
+    for s in payload["stack"]["intentions"]:
+        lines.append({"space": "intention", "uuid": s["id"], "name": s["name"]})
     for ch in payload["stack"]["chains"]:
         lines.append({"space": "chain", "uuid": ch["id"], "name": ch["name"]})
         for b in ch["blades"]:
@@ -264,8 +264,8 @@ def _ndjson_lines(payload):
             "space": "blade", "uuid": b["id"], "name": b["chain_name"],
             "pos": b["pos"], "text": b["text"],
         })
-    for r in payload["pointers"]:
-        line = {"space": "pointer", "src": r["src"], "dst": r["dst"],
+    for r in payload["reblades"]:
+        line = {"space": "reblade", "src": r["src"], "dst": r["dst"],
                 "kind": r["kind"]}
         if "note" in r:
             line["note"] = r["note"]
@@ -286,7 +286,7 @@ def _render_csv(payload, exported_at):
     writer.writerow(["space", "uuid", "name", "src", "dst", "kind",
                      "pos", "text", "note"])
     for line in _ndjson_lines(payload):
-        if line["space"] == "pointer":
+        if line["space"] == "reblade":
             writer.writerow([line["space"], "", "", line["src"], line["dst"],
                              line["kind"], "", "", line.get("note", "")])
         else:
@@ -297,12 +297,12 @@ def _render_csv(payload, exported_at):
 
 
 def _md_out_lines(payload, uuid):
-    """The md comment lines for one entity's OUTGOING pointers (modes
+    """The md comment lines for one entity's OUTGOING reblades (modes
     out/both only). Rows are already sorted, so per-src order is stable."""
-    if payload["pointer_fidelity"] not in ("out", "both"):
+    if payload["reblade_fidelity"] not in ("out", "both"):
         return []
     lines = []
-    for r in payload["pointers"]:
+    for r in payload["reblades"]:
         if r["src"] == uuid:
             lines.append(f"<!-- {r['kind']} -> {r['dst']} -->")
             if "note" in r:
@@ -314,12 +314,12 @@ def _md_inbound_rows(payload):
     """The md Inbound block rows (modes in/both only). A row whose src is
     already in the stack is rendered exactly once under its src owner
     (out/both), so it is excluded here; mode `in` keeps every row."""
-    if payload["pointer_fidelity"] not in ("in", "both"):
+    if payload["reblade_fidelity"] not in ("in", "both"):
         return []
     e = _endpoint_set(payload)
-    if payload["pointer_fidelity"] == "in":
-        return list(payload["pointers"])
-    return [r for r in payload["pointers"]
+    if payload["reblade_fidelity"] == "in":
+        return list(payload["reblades"])
+    return [r for r in payload["reblades"]
             if r["dst"] in e and r["src"] not in e]
 
 
@@ -333,8 +333,8 @@ def _chain_block(out, ch, top_level, md_out):
         out.append(f"## {ch['name']}")
         out.append(f"<!-- uuid: {ch['id']} -->")
         out.extend(md_out(ch["id"]))
-    if ch["sections"]:
-        out.append("*sections: " + ", ".join(ch["sections"]) + "*")
+    if ch["intentions"]:
+        out.append("*intentions: " + ", ".join(ch["intentions"]) + "*")
     for b in ch["blades"]:
         out.append(f"- {b['text']} <!-- uuid: {b['id']} -->")
         out.extend(md_out(b["id"]))
@@ -343,12 +343,12 @@ def _chain_block(out, ch, top_level, md_out):
 def _render_md(payload, exported_at):
     root = payload["root"]
     out = [f"# {root['name']}", f"<!-- uuid: {root['uuid']} -->"]
-    if root["space"] == "section":
-        # the section root line is the section's own line; a chain root's
-        # outgoing pointers render at the top-level chain block, a blade
+    if root["space"] == "intention":
+        # the intention root line is the intention's own line; a chain root's
+        # outgoing reblades render at the top-level chain block, a blade
         # root's at its blade line below
         out.extend(_md_out_lines(payload, root["uuid"]))
-    # stack.sections is non-empty only for a section root, where it is the
+    # stack.intentions is non-empty only for a intention root, where it is the
     # root itself — already the root heading above
     for ch in payload["stack"]["chains"]:
         _chain_block(out, ch,
@@ -390,9 +390,9 @@ def render(payload, emit_format, exported_at):
 
 # -------------------------------------------------------------- export flow
 
-def open_readonly(vault_path):
-    """Open a vault file read-only (URI mode=ro); the child never writes reads."""
-    path = os.path.abspath(vault_path)
+def open_readonly(armory_path):
+    """Open an armory file read-only (URI mode=ro); the child never writes reads."""
+    path = os.path.abspath(armory_path)
     if os.name == "nt":
         # forward slashes keep the URI parse unambiguous on Windows
         path = path.replace("\\", "/")
@@ -409,11 +409,11 @@ def write_export(conn, root_uuid, emit_path, emit_format, fidelity):
     The one-shot path (the vambrace ``export`` action): takes an OPEN
     read-only connection, computes the stack, renders, and writes the file
     with the same temp + os.replace mechanism as ``export``. No database
-    writes happen here at all -- the vault is never mutated.
+    writes happen here at all -- the armory is never mutated.
 
     Returns ``(exported_at, counts)`` (counts = the payload's
-    ``{"chains", "blades", "pointers"}`` dict) or ``None`` if the stack does
-    not resolve (root is not a live section / chain / blade).
+    ``{"chains", "blades", "reblades"}`` dict) or ``None`` if the stack does
+    not resolve (root is not a live intention / chain / blade).
     """
     payload = compute_stack(conn, root_uuid, fidelity)
     if payload is None:
@@ -435,14 +435,14 @@ def write_export(conn, root_uuid, emit_path, emit_format, fidelity):
     return exported_at, payload["counts"]
 
 
-def export(vault_path, root_uuid, emit_path, emit_format):
+def export(armory_path, root_uuid, emit_path, emit_format):
     """Run one full export. Raises on failure — the caller self-heals.
 
     0. re-read this register's own row (root_uuid, emit_path) from the
        read-only connection; if it is absent (deregistered in flight),
        return a no-op WITHOUT writing the file or minting a log;
     1. re-read committed state READ-ONLY, compute stack + signature (using
-       the register row's pointer_fidelity);
+       the register row's reblade_fidelity);
     2. write_export: re-derive the same committed stack, render, and
        atomically write <emit_path>.tmp-<random> -> os.replace (no DB
        writes in that step);
@@ -456,10 +456,10 @@ def export(vault_path, root_uuid, emit_path, emit_format):
         raise ValueError(
             f"unknown emit format {emit_format!r} (allowed: {list(ALLOWED_FORMATS)})"
         )
-    ro = open_readonly(vault_path)
+    ro = open_readonly(armory_path)
     try:
         reg = ro.execute(
-            "SELECT pointer_fidelity FROM autoexport_registers "
+            "SELECT reblade_fidelity FROM autoexport_registers "
             "WHERE root_uuid = ? AND emit_path = ?",
             (root_uuid, emit_path),
         ).fetchone()
@@ -467,7 +467,7 @@ def export(vault_path, root_uuid, emit_path, emit_format):
             # deregistered in flight: nothing to do, no file write, no log
             return {"exported_at": None, "sig": None, "log_id": None,
                     "noop": "deregistered"}
-        fidelity = reg["pointer_fidelity"]
+        fidelity = reg["reblade_fidelity"]
         payload = compute_stack(ro, root_uuid, fidelity)
         if payload is None:
             # root no longer resolves (deleted after the hook fired):
@@ -487,7 +487,7 @@ def export(vault_path, root_uuid, emit_path, emit_format):
     now = db.now_ns()
 
     # exactly one small read-write transaction (SPEC 3.18)
-    conn = db.connect(vault_path)
+    conn = db.connect(armory_path)
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -527,7 +527,7 @@ def export(vault_path, root_uuid, emit_path, emit_format):
     return {"exported_at": exported_at, "sig": sig, "log_id": log_id}
 
 
-def spawn_exporter(vault_path, root_uuid, emit_path, emit_format):
+def spawn_exporter(armory_path, root_uuid, emit_path, emit_format):
     """Detach the exporter child; the server does nothing but spawn.
 
     CREATE_NO_WINDOW + devnull streams: no console flash, no output
@@ -535,7 +535,7 @@ def spawn_exporter(vault_path, root_uuid, emit_path, emit_format):
     """
     cmd = [
         sys.executable, "-m", "qatena.autoexport",
-        vault_path, root_uuid, emit_path, emit_format,
+        armory_path, root_uuid, emit_path, emit_format,
     ]
     kwargs = {
         "stdin": subprocess.DEVNULL,
@@ -550,18 +550,18 @@ def spawn_exporter(vault_path, root_uuid, emit_path, emit_format):
 # ------------------------------------------------------------- child entry
 
 def main(argv=None):
-    """Child entrypoint: `python -m qatena.autoexport <vault> <root> <path> <fmt>`."""
+    """Child entrypoint: `python -m qatena.autoexport <armory> <root> <path> <fmt>`."""
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) != 4:
         print(
-            "usage: python -m qatena.autoexport <vault_path> <root_uuid> "
+            "usage: python -m qatena.autoexport <armory_path> <root_uuid> "
             "<emit_path> <emit_format>",
             file=sys.stderr,
         )
         return 2
-    vault_path, root_uuid, emit_path, emit_format = argv
+    armory_path, root_uuid, emit_path, emit_format = argv
     try:
-        export(vault_path, root_uuid, emit_path, emit_format)
+        export(armory_path, root_uuid, emit_path, emit_format)
     except Exception as e:  # failure is self-healing: stale sig re-triggers later
         print(f"qatena.autoexport: export failed: {e!r}", file=sys.stderr)
         return 1

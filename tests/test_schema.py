@@ -13,8 +13,8 @@ class Bootstrap(QatenaTestCase):
         tables = {r["name"] for r in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         expected = {
-            "chain_headers", "chain_sections", "chain_section_map", "chain_blades",
-            "blade_order", "pointers", "pointer_kinds", "logs", "log_refs",
+            "chain_headers", "chain_intentions", "chain_intention_map", "chain_blades",
+            "blade_order", "reblades", "reblade_kinds", "logs", "log_refs",
             "open_item_states", "open_items", "ruling_states", "rulings", "terms"}
         self.assertTrue(expected.issubset(tables))
         self.assertEqual(
@@ -22,8 +22,8 @@ class Bootstrap(QatenaTestCase):
 
 
 class SeededRegisters(QatenaTestCase):
-    def test_pointer_kinds_exact(self):
-        got = {r["kind"] for r in self.conn.execute("SELECT kind FROM pointer_kinds")}
+    def test_reblade_kinds_exact(self):
+        got = {r["kind"] for r in self.conn.execute("SELECT kind FROM reblade_kinds")}
         self.assertEqual(got, {"name-ref", "supersedes", "part-of", "source", "see"})
 
     def test_open_item_states_exact(self):

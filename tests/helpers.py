@@ -70,8 +70,8 @@ class QatenaTestCase(unittest.TestCase):
             sql, args = sql + " WHERE log_id=?", (log_id,)
         return [tuple(r) for r in self.conn.execute(sql + " ORDER BY log_id, uuid", args)]
 
-    def pointers(self, **where):
-        sql, args = "SELECT src_uuid, dst_uuid, kind, note, created FROM pointers WHERE 1=1", []
+    def reblades(self, **where):
+        sql, args = "SELECT src_uuid, dst_uuid, kind, note, created FROM reblades WHERE 1=1", []
         for col in ("src_uuid", "dst_uuid", "kind"):
             if col in where:
                 sql += " AND %s=?" % col
@@ -79,7 +79,7 @@ class QatenaTestCase(unittest.TestCase):
         return [tuple(r) for r in self.conn.execute(sql + " ORDER BY 1,2,3", tuple(args))]
 
     def pkeys(self, **where):
-        return {(p[0], p[1], p[2]) for p in self.pointers(**where)}
+        return {(p[0], p[1], p[2]) for p in self.reblades(**where)}
 
     def chain_ids(self, name=None):
         sql, args = "SELECT id FROM chain_headers", ()
@@ -89,12 +89,12 @@ class QatenaTestCase(unittest.TestCase):
 
     def section_names(self, chain_id):
         return [r["name"] for r in self.conn.execute(
-            "SELECT s.name FROM chain_section_map m JOIN chain_sections s ON s.id=m.section_id "
+            "SELECT s.name FROM chain_intention_map m JOIN chain_intentions s ON s.id=m.intention_id "
             "WHERE m.chain_id=? ORDER BY s.name COLLATE NOCASE", (chain_id,))]
 
     def section_orientation(self, name):
         r = self.conn.execute(
-            "SELECT orientation FROM chain_sections WHERE name=?", (name,)).fetchone()
+            "SELECT orientation FROM chain_intentions WHERE name=?", (name,)).fetchone()
         return r["orientation"] if r else None
 
     # -- direct inserts for spaces with no v1 write verb ---------------------
@@ -126,7 +126,7 @@ class QatenaTestCase(unittest.TestCase):
     def insert_section(self, name, orientation="B"):
         sid, now = new_uuid7(), self._now()
         self.conn.execute(
-            "INSERT INTO chain_sections (id,name,orientation,created,updated) "
+            "INSERT INTO chain_intentions (id,name,orientation,created,updated) "
             "VALUES (?,?,?,?,?)",
             (sid, name, orientation, now, now))
         return sid

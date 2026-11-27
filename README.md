@@ -5,10 +5,10 @@ SQLite-based note storage for local AI agents, tailored to complex personal proj
 
 Durable, bulletizable, pointerable, and malleable note storage for local AI agents:
 notes (**chains**) decompose into individually addressable units (**blades**),
-cross-references (**pointers**) are first-class and traversable, and structure can be
-split, merged, and refiled without breaking references. It is a set of SQLite databases (one **vault** per project)
+cross-references (**reblades**) are first-class and traversable, and structure can be
+split, merged, and refiled without breaking references. It is a set of SQLite databases (one **armory** per project)
 behind a stdio MCP server that exposes a small, composite, batch-capable verb surface —
-one logical operation per call — with every invariant enforced server-side. Every call is routed by a **vambrace** key (the vault's UUIDv7) to its project's vault; vaults are created with the `vambrace` verb.
+one logical operation per call — with every invariant enforced server-side. Every call is routed by a **vambrace** key (the armory's UUIDv7) to its project's armory; armories are created with the `vambrace` verb.
 
 ## Repo layout
 
@@ -26,8 +26,8 @@ one logical operation per call — with every invariant enforced server-side. Ev
 python -m qatena
 ```
 
-The vault dir comes from the `QATENA_VAULTS` environment variable (default `./.qatena`);
-the directory is auto-created at start, and each vault is a file `<key>.db` inside it,
+The armory dir comes from the `QATENA_ARMORIES` environment variable (default `./.qatena`);
+the directory is auto-created at start, and each armory is a file `<key>.db` inside it,
 created by the `vambrace` verb. The server speaks newline-delimited JSON-RPC 2.0 (MCP) on stdin/stdout until
 stdin closes; all diagnostics go to stderr, never stdout.
 
@@ -54,7 +54,7 @@ extensions:
     enabled: true
     envs:
       PYTHONPATH: "F:/Projects/Qatena"
-      QATENA_VAULTS: "F:/Projects/Qatena/.qatena"
+      QATENA_ARMORIES: "F:/Projects/Qatena/.qatena"
     type: stdio
     timeout: 300
 ```
