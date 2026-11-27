@@ -33,6 +33,24 @@ Themed after a chain weapon system in the project that prompted this design. The
 
 A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls.
 
+## Multi-vault routing
+
+One server process, many vaults: each project gets its own Qatena database file. The 18th verb,
+`vambrace` (`action: "create"`), mints a UUIDv7, instantiates `<key>.db` in the vault dir
+(env `QATENA_VAULTS`, default `./.qatena`), bootstraps its schema, and returns that UUIDv7 as
+the vault's **routing key** — every other verb call carries that key in a required `vambrace`
+argument, and the server routes the call to the right file.
+
+Routing state is the files themselves — an existence check in the vault dir — so there is no
+registry to persist and routing survives server restarts. The key rules:
+
+- **Strict vambrace-or-nothing** — every call is routed by an explicit key.
+- **No default vault, ever** — a default would let an un-oriented agent land in the wrong
+  project's data.
+- **Fail closed** — missing key → `missing_vambrace`; malformed key → `malformed_vambrace`;
+  well-formed key with no file → `unknown_vambrace`. The server never silently creates or
+  falls back.
+
 ## Data model
 
 ### Core tables
@@ -78,7 +96,11 @@ v1 kinds: `name-ref` (mentions by name; the kind auto-linking mints at write tim
 
 Placeholder surface only. A verb-level contract is reserved: field-level change history for any UUID entity (field, old → new, timestamp). The mechanism (audit tables, triggers) is deliberately deferred until there is something to build against; the design may assume write verbs leave an auditable trace. A coarse per-entity trace (which log touched which UUID, with an op code) is available via `logs` + `log_refs`; field-level old→new stays deferred.
 
-## Verb surface (17 tools)
+## Verb surface (18 tools)
+
+**Vault**
+- `vambrace` — `action: "create"` mints a UUIDv7 and instantiates an empty vault; the returned
+  UUIDv7 is the routing key required on every other verb (multi-vault routing, above)
 
 **Chain writes**
 - `chain_put` — upsert by UUID or name; presence-mask fields (`name`, `sections`, …); fresh UUIDv7 if absent. Renames and refiling are just this.
@@ -124,4 +146,4 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 - Full DDL + MCP tool schemas — drafted in `SPEC.md` (tracked, uncommitted), pending review.
 - UUID storage → `BLOB(16)` (finalizing step).
 - `history` mechanism (field-level audit; contract reserved).
-- Agent-authored log entries (a possible 18th verb) — open.
+- Agent-authored log entries (a possible 19th verb) — open.

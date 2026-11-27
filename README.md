@@ -6,17 +6,17 @@ SQLite-based note storage for local AI agents, tailored to complex personal proj
 Durable, bulletizable, pointerable, and malleable note storage for local AI agents:
 notes (**chains**) decompose into individually addressable units (**blades**),
 cross-references (**pointers**) are first-class and traversable, and structure can be
-split, merged, and refiled without breaking references. It is a single SQLite database
+split, merged, and refiled without breaking references. It is a set of SQLite databases (one **vault** per project)
 behind a stdio MCP server that exposes a small, composite, batch-capable verb surface —
-one logical operation per call — with every invariant enforced server-side.
+one logical operation per call — with every invariant enforced server-side. Every call is routed by a **vambrace** key (the vault's UUIDv7) to its project's vault; vaults are created with the `vambrace` verb.
 
 ## Repo layout
 
-- `qatena/` — the package: `server.py` (stdio MCP loop + the 17 tool definitions),
-  `verbs.py` (the 17-verb surface), `schema.py` (DDL + seeded registers), `autolink.py`
+- `qatena/` — the package: `server.py` (stdio MCP loop + the 18 tool definitions),
+  `verbs.py` (the 18-verb surface), `schema.py` (DDL + seeded registers), `autolink.py`
   (auto-linking), `db.py` (connection + timestamp helpers), `uuid7.py`, `__main__.py`.
 - `tests/` — stdlib `unittest` suite (no third-party dependencies).
-- `SPEC.md` — the contract: conventions, DDL, the 17 verb schemas, error codes.
+- `SPEC.md` — the contract: conventions, DDL, the 18 verb schemas, error codes.
   `DESIGN.md` — the settled design it implements. `AGENTS.md` — local agent orientation
   (gitignored).
 
@@ -26,9 +26,9 @@ one logical operation per call — with every invariant enforced server-side.
 python -m qatena
 ```
 
-The DB path comes from the `QATENA_DB` environment variable (default
-`./.qatena/qatena.db`); the file and its parent directory are auto-created on first
-start. The server speaks newline-delimited JSON-RPC 2.0 (MCP) on stdin/stdout until
+The vault dir comes from the `QATENA_VAULTS` environment variable (default `./.qatena`);
+the directory is auto-created at start, and each vault is a file `<key>.db` inside it,
+created by the `vambrace` verb. The server speaks newline-delimited JSON-RPC 2.0 (MCP) on stdin/stdout until
 stdin closes; all diagnostics go to stderr, never stdout.
 
 ## Running the tests
@@ -54,14 +54,14 @@ extensions:
     enabled: true
     envs:
       PYTHONPATH: "F:/Projects/Qatena"
-      QATENA_DB: "F:/Projects/Qatena/.qatena/qatena.db"
+      QATENA_VAULTS: "F:/Projects/Qatena/.qatena"
     type: stdio
     timeout: 300
 ```
 
 ## Write surface
 
-The 17 verbs are the only write surface; raw SQL is deliberately not exposed. The agent
+The 18 verbs are the only write surface; raw SQL is deliberately not exposed. The agent
 gets named, shape-checked operations instead: every write runs in one all-or-nothing
 transaction, the DB path is never advertised in any tool, and invariants (gapless blade
 order, endpoint validation, system logs) are enforced server-side — so a bypassed write

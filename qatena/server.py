@@ -1,17 +1,21 @@
-"""Qatena MCP stdio server (SPEC 3).
+"""Qatena MCP stdio server (SPEC 1.9, 3).
 
 Transport: newline-delimited JSON (one JSON-RPC 2.0 object per line, UTF-8).
 Nothing but MCP messages goes to stdout; all diagnostics go to stderr.
-Serial message loop until stdin EOF; ``serve(conn) -> 0``.
+Multi-vault: every non-vambrace call routes to a vault file via its
+``vambrace`` key; the ``vambrace`` verb creates vaults. Serial message loop
+until stdin EOF; ``serve(vault_dir) -> 0``.
 """
 
 import json
+import os
+import re
 import sys
 
-from . import __version__
+from . import __version__, db, schema, uuid7
 from .verbs import VerbError, execute
 
-# The 17 tools, copied verbatim from SPEC.md 3.1-3.17 (same JSON, no rewording).
+# The 18 tools, copied from SPEC.md 3.1-3.18 (same JSON, no rewording).
 TOOLS = [
     {
         "name": "chain_put",
@@ -19,22 +23,49 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Chain uuid. Takes precedence over name." },
-                "name": { "type": "string", "minLength": 1, "description": "Chain name (alias). Unique within the chain space, case-insensitive." },
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Chain uuid. Takes precedence over name."
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Chain name (alias). Unique within the chain space, case-insensitive."
+                },
                 "sections": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "minLength": 1 },
-                            "orientation": { "type": "string", "enum": ["W", "B"] }
+                            "name": {
+                                "type": "string",
+                                "minLength": 1
+                            },
+                            "orientation": {
+                                "type": "string",
+                                "enum": [
+                                    "W",
+                                    "B"
+                                ]
+                            }
                         },
-                        "required": ["name"]
+                        "required": [
+                            "name"
+                        ]
                     },
                     "description": "If present, replaces the chain's section membership with exactly this set. Sections are upserted by name."
                 }
             },
-            "minProperties": 1
+            "minProperties": 1,
+            "required": [
+                "vambrace"
+            ]
         }
     },
     {
@@ -43,10 +74,24 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "name": { "type": "string", "minLength": 1 }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1
+                }
             },
-            "minProperties": 1
+            "minProperties": 1,
+            "required": [
+                "vambrace"
+            ]
         }
     },
     {
@@ -55,23 +100,57 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "source": { "type": "string", "description": "Source chain id or name." },
-                "blades": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Blade UUIDs to move, in the order they should appear in the new chain." },
-                "name": { "type": "string", "minLength": 1, "description": "Name for the new chain." },
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "source": {
+                    "type": "string",
+                    "description": "Source chain id or name."
+                },
+                "blades": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "minItems": 1,
+                    "description": "Blade UUIDs to move, in the order they should appear in the new chain."
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Name for the new chain."
+                },
                 "sections": {
                     "type": "array",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string" },
-                            "orientation": { "type": "string", "enum": ["W", "B"] }
+                            "name": {
+                                "type": "string"
+                            },
+                            "orientation": {
+                                "type": "string",
+                                "enum": [
+                                    "W",
+                                    "B"
+                                ]
+                            }
                         },
-                        "required": ["name"]
+                        "required": [
+                            "name"
+                        ]
                     },
                     "description": "Optional initial section membership for the new chain."
                 }
             },
-            "required": ["source", "blades", "name"]
+            "required": [
+                "vambrace",
+                "source",
+                "blades",
+                "name"
+            ]
         }
     },
     {
@@ -80,10 +159,25 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "into": { "type": "string", "description": "Surviving chain id or name." },
-                "fold": { "type": "string", "description": "Chain to dissolve (id or name)." }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "into": {
+                    "type": "string",
+                    "description": "Surviving chain id or name."
+                },
+                "fold": {
+                    "type": "string",
+                    "description": "Chain to dissolve (id or name)."
+                }
             },
-            "required": ["into", "fold"]
+            "required": [
+                "vambrace",
+                "into",
+                "fold"
+            ]
         }
     },
     {
@@ -92,11 +186,30 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "chain": { "type": "string", "description": "Target chain id or name." },
-                "text": { "type": "string", "minLength": 1 },
-                "index": { "type": "integer", "minimum": 0, "description": "0-based position; omitted = append. Must be <= current blade count." }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "chain": {
+                    "type": "string",
+                    "description": "Target chain id or name."
+                },
+                "text": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "0-based position; omitted = append. Must be <= current blade count."
+                }
             },
-            "required": ["chain", "text"]
+            "required": [
+                "vambrace",
+                "chain",
+                "text"
+            ]
         }
     },
     {
@@ -105,10 +218,26 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
-                "text": { "type": "string", "minLength": 1 }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Blade UUID."
+                },
+                "text": {
+                    "type": "string",
+                    "minLength": 1
+                }
             },
-            "required": ["id", "text"]
+            "required": [
+                "vambrace",
+                "id",
+                "text"
+            ]
         }
     },
     {
@@ -117,11 +246,30 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
-                "to_chain": { "type": "string", "description": "Destination chain id or name; omitted = same chain." },
-                "index": { "type": "integer", "minimum": 0, "description": "0-based destination position, measured after removal; omitted = end." }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Blade UUID."
+                },
+                "to_chain": {
+                    "type": "string",
+                    "description": "Destination chain id or name; omitted = same chain."
+                },
+                "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "0-based destination position, measured after removal; omitted = end."
+                }
             },
-            "required": ["id"]
+            "required": [
+                "vambrace",
+                "id"
+            ]
         }
     },
     {
@@ -130,9 +278,21 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Blade UUID."
+                }
             },
-            "required": ["id"]
+            "required": [
+                "vambrace",
+                "id"
+            ]
         }
     },
     {
@@ -141,6 +301,11 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
                 "ops": {
                     "type": "array",
                     "minItems": 1,
@@ -149,18 +314,35 @@ TOOLS = [
                         "properties": {
                             "op": {
                                 "type": "string",
-                                "enum": ["chain_put", "chain_delete", "chain_split", "chain_merge", "blade_insert", "blade_edit", "blade_move", "blade_delete", "pointer_add", "pointer_remove"]
+                                "enum": [
+                                    "chain_put",
+                                    "chain_delete",
+                                    "chain_split",
+                                    "chain_merge",
+                                    "blade_insert",
+                                    "blade_edit",
+                                    "blade_move",
+                                    "blade_delete",
+                                    "pointer_add",
+                                    "pointer_remove"
+                                ]
                             },
                             "args": {
                                 "type": "object",
-                                "description": "Arguments for this op, with the exact shape of the standalone verb's input."
+                                "description": "Arguments for this op, with the shape of the standalone verb's input, except the routing key, which is supplied once as this batch's vambrace argument."
                             }
                         },
-                        "required": ["op", "args"]
+                        "required": [
+                            "op",
+                            "args"
+                        ]
                     }
                 }
             },
-            "required": ["ops"]
+            "required": [
+                "vambrace",
+                "ops"
+            ]
         }
     },
     {
@@ -169,12 +351,39 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] },
-                "note": { "type": "string" }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "src": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "dst": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "name-ref",
+                        "supersedes",
+                        "part-of",
+                        "source",
+                        "see"
+                    ]
+                },
+                "note": {
+                    "type": "string"
+                }
             },
-            "required": ["src", "dst", "kind"]
+            "required": [
+                "vambrace",
+                "src",
+                "dst",
+                "kind"
+            ]
         }
     },
     {
@@ -183,11 +392,36 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "src": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "dst": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "name-ref",
+                        "supersedes",
+                        "part-of",
+                        "source",
+                        "see"
+                    ]
+                }
             },
-            "required": ["src", "dst", "kind"]
+            "required": [
+                "vambrace",
+                "src",
+                "dst",
+                "kind"
+            ]
         }
     },
     {
@@ -196,9 +430,20 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                }
             },
-            "required": ["id"]
+            "required": [
+                "vambrace",
+                "id"
+            ]
         }
     },
     {
@@ -207,16 +452,51 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "probes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "description": "Search terms; unioned across spaces." },
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "probes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "minItems": 1,
+                    "description": "Search terms; unioned across spaces."
+                },
                 "spaces": {
                     "type": "array",
-                    "items": { "type": "string", "enum": ["chain", "blade", "section", "open_item", "ruling", "term", "log"] },
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "chain",
+                            "blade",
+                            "section",
+                            "open_item",
+                            "ruling",
+                            "term",
+                            "log"
+                        ]
+                    },
                     "description": "Restrict to these entity spaces; omitted = all."
                 },
-                "context": { "type": "integer", "minimum": 0, "description": "Characters of context on each side of a match. Default 120." },
-                "limit": { "type": "integer", "minimum": 1, "description": "Maximum hits. Default 50." }
+                "context": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Characters of context on each side of a match. Default 120."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum hits. Default 50."
+                }
             },
-            "required": ["probes"]
+            "required": [
+                "vambrace",
+                "probes"
+            ]
         }
     },
     {
@@ -225,24 +505,74 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "space": { "type": "string", "enum": ["chain", "section", "open_item", "ruling", "term", "log"] },
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "space": {
+                    "type": "string",
+                    "enum": [
+                        "chain",
+                        "section",
+                        "open_item",
+                        "ruling",
+                        "term",
+                        "log"
+                    ]
+                },
                 "filter": {
                     "type": "object",
                     "properties": {
-                        "section": { "type": "string" },
-                        "orientation": { "type": "string", "enum": ["W", "B"] },
-                        "state": { "type": "string" },
-                        "uuid": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                        "since": { "type": "string", "description": "iso, inclusive" },
-                        "until": { "type": "string", "description": "iso, inclusive" },
-                        "name_prefix": { "type": "string" }
+                        "section": {
+                            "type": "string"
+                        },
+                        "orientation": {
+                            "type": "string",
+                            "enum": [
+                                "W",
+                                "B"
+                            ]
+                        },
+                        "state": {
+                            "type": "string"
+                        },
+                        "uuid": {
+                            "type": "string",
+                            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                        },
+                        "since": {
+                            "type": "string",
+                            "description": "iso, inclusive"
+                        },
+                        "until": {
+                            "type": "string",
+                            "description": "iso, inclusive"
+                        },
+                        "name_prefix": {
+                            "type": "string"
+                        }
                     }
                 },
-                "include_blades": { "type": "boolean", "description": "For space=chain: include ordered blades in each record. Default false." },
-                "limit": { "type": "integer", "minimum": 1, "description": "Default 50." },
-                "offset": { "type": "integer", "minimum": 0, "description": "Default 0." }
+                "include_blades": {
+                    "type": "boolean",
+                    "description": "For space=chain: include ordered blades in each record. Default false."
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Default 50."
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Default 0."
+                }
             },
-            "required": ["space"]
+            "required": [
+                "vambrace",
+                "space"
+            ]
         }
     },
     {
@@ -251,11 +581,39 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "direction": { "type": "string", "enum": ["in", "out", "both"], "description": "Default both." },
-                "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": [
+                        "in",
+                        "out",
+                        "both"
+                    ],
+                    "description": "Default both."
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": [
+                        "name-ref",
+                        "supersedes",
+                        "part-of",
+                        "source",
+                        "see"
+                    ]
+                }
             },
-            "required": ["id"]
+            "required": [
+                "vambrace",
+                "id"
+            ]
         }
     },
     {
@@ -264,17 +622,52 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "from": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "direction": { "type": "string", "enum": ["out", "in", "both"], "description": "Default out." },
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "from": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": [
+                        "out",
+                        "in",
+                        "both"
+                    ],
+                    "description": "Default out."
+                },
                 "kinds": {
                     "type": "array",
-                    "items": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] },
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "name-ref",
+                            "supersedes",
+                            "part-of",
+                            "source",
+                            "see"
+                        ]
+                    },
                     "description": "Restrict traversal to these kinds; omitted = any kind."
                 },
-                "max_hops": { "type": "integer", "minimum": 1, "description": "Default 2, maximum 5." },
-                "expand_chains": { "type": "boolean", "description": "Include blades for chain nodes. Default false." }
+                "max_hops": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Default 2, maximum 5."
+                },
+                "expand_chains": {
+                    "type": "boolean",
+                    "description": "Include blades for chain nodes. Default false."
+                }
             },
-            "required": ["from"]
+            "required": [
+                "vambrace",
+                "from"
+            ]
         }
     },
     {
@@ -283,15 +676,51 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-                "limit": { "type": "integer", "minimum": 1, "description": "Default 20." }
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Default 20."
+                }
             },
-            "required": ["id"]
+            "required": [
+                "vambrace",
+                "id"
+            ]
         }
     },
+    {
+        "name": "vambrace",
+        "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. v1 supports create only; any other action fails with unsupported_action. This verb takes no routing key of its own.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "create"
+                    ]
+                }
+            },
+            "required": [
+                "action"
+            ]
+        }
+    }
 ]
 
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
+
+# Routing key format (SPEC 1.9): UUIDv7 — 36-char lowercase hyphenated, version nibble 7.
+_VAMBRACE_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def _send(payload):
@@ -308,7 +737,55 @@ def _send_error(msg_id, code, message):
     _send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}})
 
 
-def _handle(conn, msg):
+def _tool_error(code, message):
+    return {"error": {"code": code, "message": message}}
+
+
+def _call_vambrace(vault_dir, arguments):
+    """The vambrace verb itself: vault control, no routing key (SPEC 1.9, 3.18)."""
+    action = arguments.get("action")
+    if action != "create":
+        return _tool_error("unsupported_action",
+                           f"unsupported vambrace action {action!r} — v1 supports: create"), True
+    key = uuid7.new_uuid7()
+    conn = db.connect(os.path.join(vault_dir, key + ".db"))
+    try:
+        schema.bootstrap(conn)
+    finally:
+        conn.close()
+    return {"vambrace": key}, False
+
+
+def _call_routed(vault_dir, name, arguments):
+    """Route a non-vambrace call to its vault; fail closed, no default (SPEC 1.9)."""
+    key = arguments.get("vambrace")
+    if not isinstance(key, str) or not key:
+        return _tool_error("missing_vambrace",
+                           "vambrace routing key is required — create a vault with the "
+                           "vambrace verb (action=create) first"), True
+    if not _VAMBRACE_KEY_RE.match(key):
+        return _tool_error("malformed_vambrace",
+                           f"vambrace key must be a UUIDv7 (36-char lowercase, version 7): got {key!r}"), True
+    path = os.path.join(vault_dir, key + ".db")
+    if not os.path.exists(path):
+        return _tool_error("unknown_vambrace",
+                           f"unknown vambrace '{key}': no such vault (create one with the vambrace verb)"), True
+    conn = db.connect(path)
+    try:
+        schema.bootstrap(conn)  # idempotent: keeps a hand-touched vault file self-healing
+        try:
+            # the verb layer never sees the routing key
+            args = {k: v for k, v in arguments.items() if k != "vambrace"}
+            return execute(conn, name, args), False
+        except VerbError as e:
+            return _tool_error(e.code, e.message), True
+        except Exception as e:  # unexpected: fail closed, never leak internals
+            return _tool_error("db_error", f"internal error: {type(e).__name__}"), True
+    finally:
+        conn.close()
+
+
+def _handle(vault_dir, msg):
     method = msg.get("method")
     has_id = "id" in msg
     msg_id = msg.get("id") if has_id else None
@@ -346,15 +823,10 @@ def _handle(conn, msg):
         arguments = params.get("arguments")
         if not isinstance(arguments, dict):
             arguments = {}
-        try:
-            payload = execute(conn, name, arguments)
-            is_error = False
-        except VerbError as e:
-            payload = {"error": {"code": e.code, "message": e.message}}
-            is_error = True
-        except Exception as e:  # unexpected: fail closed, never leak internals
-            payload = {"error": {"code": "db_error", "message": f"internal error: {type(e).__name__}"}}
-            is_error = True
+        if name == "vambrace":
+            payload, is_error = _call_vambrace(vault_dir, arguments)
+        else:
+            payload, is_error = _call_routed(vault_dir, name, arguments)
         _send_result(msg_id, {
             "content": [{"type": "text", "text": json.dumps(payload, separators=(",", ":"), ensure_ascii=False)}],
             "isError": is_error,
@@ -364,8 +836,12 @@ def _handle(conn, msg):
     _send_error(msg_id, -32601, "method not found")
 
 
-def serve(conn) -> int:
-    """Serial MCP stdio loop until stdin EOF. Returns 0."""
+def serve(vault_dir: str) -> int:
+    """Serial MCP stdio loop until stdin EOF. Returns 0.
+
+    vault_dir: directory holding the vault files (<key>.db). The server keeps
+    no routing state — routing is the files themselves, so it survives restart.
+    """
     for stream in (sys.stdin, sys.stdout):
         try:
             stream.reconfigure(encoding="utf-8")
@@ -386,7 +862,7 @@ def serve(conn) -> int:
             _send_error(None, -32700, "parse error")
             continue
         try:
-            _handle(conn, msg)
+            _handle(vault_dir, msg)
         except Exception as e:
             print(f"qatena: handler error for {msg.get('method')!r}: {e!r}", file=sys.stderr)
             if "id" in msg:

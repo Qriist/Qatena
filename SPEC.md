@@ -4,8 +4,8 @@
 Resolutions the design left rough are marked **[resolution]** — the set of those is pending review.
 
 **Runtime:** Python 3, stdlib `sqlite3`, a single stdio MCP server process (goose extension).
-One database file, created and owned by the server on first start. The server is the **sole write
-surface**: no other process or tool may open the DB for writes.
+One database file per vault, created and owned by the server (§1.9, §3.18). The server is the **sole write
+surface**: no other process or tool may open any vault file for writes.
 
 ## 1. Conventions
 
@@ -56,7 +56,7 @@ Every write transaction mints, in the same transaction:
   (`referenced` = e.g. the endpoints of a new pointer row.)
 
 The settled verb surface has **no log-write verb**: the timeline is the mechanical trace of the
-system's own footprint. Agent-authored narrative log entries would be an 18th verb — open, not
+system's own footprint. Agent-authored narrative log entries would be a 19th verb — open, not
 part of v1 (see §5).
 
 ### 1.6 Auto-linking
@@ -95,6 +95,25 @@ part of v1 (see §5).
 - Section membership writes and the owning chain's `updated` are always written together.
 - Auto-log (§1.5) and auto-linking (§1.6) are part of the write transaction, not afterthoughts.
 - `logs` is append-only: no verb updates or deletes a log row or its `log_refs`.
+
+### 1.9 Vambrace routing (multi-vault)
+
+- Every entity lives in a **vault** — one Qatena database file. The vault dir comes from the
+  `QATENA_VAULTS` environment variable (default `./.qatena`); the server creates it at startup.
+  A vault file is `<vault_dir>/<key>.db`.
+- A vault is created only by the `vambrace` verb, `action: "create"` (§3.18): it mints a UUIDv7,
+  instantiates `<key>.db`, bootstraps its schema, and returns exactly
+  `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vault's **routing key**.
+- Every other verb takes a **required** `vambrace` argument = the routing key. Key format:
+  36-char lowercase hyphenated, version nibble 7 —
+  `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`.
+- **Fail closed; no default vault, ever.** Missing key → `missing_vambrace`; malformed key →
+  `malformed_vambrace`; well-formed key with no file in the vault dir → `unknown_vambrace`.
+  The server never silently creates a vault or falls back to another.
+- Routing state is the files themselves — a scan / existence check in the vault dir. No in-memory
+  registry: routing survives server restart. Each call opens a fresh connection to its vault.
+- `QATENA_DB` (the old single-database env var, default `./.qatena/qatena.db`) is **retired** —
+  replaced by `QATENA_VAULTS`.
 
 ## 2. DDL
 
@@ -231,7 +250,7 @@ explicit indexes exist (`idx_csm_section`, `idx_pointers_dst`, `idx_logs_created
 `idx_log_refs_uuid`, `idx_blades_chain`); all tables are personal-project scale — no
 speculative indexes. `search` is LIKE-probe based in v1 (FTS5 is a later optimization, §5).
 
-## 3. Verb surface (17 MCP tools)
+## 3. Verb surface (18 MCP tools)
 
 **Shared field definitions** (used throughout the schemas below):
 
@@ -240,6 +259,10 @@ speculative indexes. `search` is LIKE-probe based in v1 (FTS5 is a later optimiz
 - **iso** — `string`, ISO-8601 UTC with milliseconds (`2026-11-27T06:31:00.123Z`)
 - **kind enum** — `["name-ref", "supersedes", "part-of", "source", "see"]`
 - **entity spaces** — `chain | section | blade | open_item | ruling | term | log`
+- **vambrace** — `string`, the routing key: the UUIDv7 returned by `vambrace`
+  (`action: "create"`, §3.18); pattern
+  `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`. Required on every verb
+  except `vambrace` itself (§1.9).
 
 **Addressing.** Where a tool takes an entity address, `id` (uuid) takes precedence over `name`;
 at least one must be supplied. If both are supplied, the name must equal the resolved entity's
@@ -265,7 +288,8 @@ an idempotent upsert, not an error.
 ```
 
 **Error codes:** `not_found` · `duplicate_name` · `unresolvable_endpoint` · `invalid_index` ·
-`validation_failed` · `not_implemented` · `db_error` (always fail-closed: rolled back, nothing written).
+`validation_failed` · `missing_vambrace` · `malformed_vambrace` · `unknown_vambrace` ·
+`unsupported_action` · `not_implemented` · `db_error` (always fail-closed: rolled back, nothing written).
 
 ---
 
@@ -281,6 +305,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Chain uuid. Takes precedence over name." },
       "name": { "type": "string", "minLength": 1, "description": "Chain name (alias). Unique within the chain space, case-insensitive." },
       "sections": {
@@ -296,7 +321,8 @@ change. Renames and refiling are just this.
         "description": "If present, replaces the chain's section membership with exactly this set. Sections are upserted by name."
       }
     },
-    "minProperties": 1
+    "minProperties": 1,
+    "required": ["vambrace"]
   }
 }
 ```
@@ -310,10 +336,12 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "name": { "type": "string", "minLength": 1 }
     },
-    "minProperties": 1
+    "minProperties": 1,
+    "required": ["vambrace"]
   }
 }
 ```
@@ -327,6 +355,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "source": { "type": "string", "description": "Source chain id or name." },
       "blades": { "type": "array", "items": { "type": "string" }, "minItems": 1, "description": "Blade UUIDs to move, in the order they should appear in the new chain." },
       "name": { "type": "string", "minLength": 1, "description": "Name for the new chain." },
@@ -343,7 +372,7 @@ change. Renames and refiling are just this.
         "description": "Optional initial section membership for the new chain."
       }
     },
-    "required": ["source", "blades", "name"]
+    "required": ["vambrace", "source", "blades", "name"]
   }
 }
 ```
@@ -357,10 +386,11 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "into": { "type": "string", "description": "Surviving chain id or name." },
       "fold": { "type": "string", "description": "Chain to dissolve (id or name)." }
     },
-    "required": ["into", "fold"]
+    "required": ["vambrace", "into", "fold"]
   }
 }
 ```
@@ -374,11 +404,12 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "chain": { "type": "string", "description": "Target chain id or name." },
       "text": { "type": "string", "minLength": 1 },
       "index": { "type": "integer", "minimum": 0, "description": "0-based position; omitted = append. Must be <= current blade count." }
     },
-    "required": ["chain", "text"]
+    "required": ["vambrace", "chain", "text"]
   }
 }
 ```
@@ -392,10 +423,11 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
       "text": { "type": "string", "minLength": 1 }
     },
-    "required": ["id", "text"]
+    "required": ["vambrace", "id", "text"]
   }
 }
 ```
@@ -409,11 +441,12 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." },
       "to_chain": { "type": "string", "description": "Destination chain id or name; omitted = same chain." },
       "index": { "type": "integer", "minimum": 0, "description": "0-based destination position, measured after removal; omitted = end." }
     },
-    "required": ["id"]
+    "required": ["vambrace", "id"]
   }
 }
 ```
@@ -427,9 +460,10 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Blade UUID." }
     },
-    "required": ["id"]
+    "required": ["vambrace", "id"]
   }
 }
 ```
@@ -443,6 +477,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "ops": {
         "type": "array",
         "minItems": 1,
@@ -455,14 +490,14 @@ change. Renames and refiling are just this.
             },
             "args": {
               "type": "object",
-              "description": "Arguments for this op, with the exact shape of the standalone verb's input."
+              "description": "Arguments for this op, with the shape of the standalone verb's input, except the routing key, which is supplied once as this batch's vambrace argument."
             }
           },
           "required": ["op", "args"]
         }
       }
     },
-    "required": ["ops"]
+    "required": ["vambrace", "ops"]
   }
 }
 ```
@@ -476,12 +511,13 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] },
       "note": { "type": "string" }
     },
-    "required": ["src", "dst", "kind"]
+    "required": ["vambrace", "src", "dst", "kind"]
   }
 }
 ```
@@ -495,11 +531,12 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
     },
-    "required": ["src", "dst", "kind"]
+    "required": ["vambrace", "src", "dst", "kind"]
   }
 }
 ```
@@ -513,9 +550,10 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" }
     },
-    "required": ["id"]
+    "required": ["vambrace", "id"]
   }
 }
 ```
@@ -529,6 +567,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "probes": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "description": "Search terms; unioned across spaces." },
       "spaces": {
         "type": "array",
@@ -538,7 +577,7 @@ change. Renames and refiling are just this.
       "context": { "type": "integer", "minimum": 0, "description": "Characters of context on each side of a match. Default 120." },
       "limit": { "type": "integer", "minimum": 1, "description": "Maximum hits. Default 50." }
     },
-    "required": ["probes"]
+    "required": ["vambrace", "probes"]
   }
 }
 ```
@@ -552,6 +591,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "space": { "type": "string", "enum": ["chain", "section", "open_item", "ruling", "term", "log"] },
       "filter": {
         "type": "object",
@@ -569,7 +609,7 @@ change. Renames and refiling are just this.
       "limit": { "type": "integer", "minimum": 1, "description": "Default 50." },
       "offset": { "type": "integer", "minimum": 0, "description": "Default 0." }
     },
-    "required": ["space"]
+    "required": ["vambrace", "space"]
   }
 }
 ```
@@ -583,11 +623,12 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "direction": { "type": "string", "enum": ["in", "out", "both"], "description": "Default both." },
       "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
     },
-    "required": ["id"]
+    "required": ["vambrace", "id"]
   }
 }
 ```
@@ -601,6 +642,7 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "from": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "direction": { "type": "string", "enum": ["out", "in", "both"], "description": "Default out." },
       "kinds": {
@@ -611,7 +653,7 @@ change. Renames and refiling are just this.
       "max_hops": { "type": "integer", "minimum": 1, "description": "Default 2, maximum 5." },
       "expand_chains": { "type": "boolean", "description": "Include blades for chain nodes. Default false." }
     },
-    "required": ["from"]
+    "required": ["vambrace", "from"]
   }
 }
 ```
@@ -625,16 +667,41 @@ change. Renames and refiling are just this.
   "inputSchema": {
     "type": "object",
     "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=create). Required — calls without a known key fail closed; there is no default vault." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "limit": { "type": "integer", "minimum": 1, "description": "Default 20." }
     },
-    "required": ["id"]
+    "required": ["vambrace", "id"]
+  }
+}
+```
+
+### 3.18 `vambrace`
+
+Create and route vaults. `action: "create"` mints a UUIDv7, instantiates an empty Qatena database
+file named `<UUIDv7>.db` in the vault dir, bootstraps its schema, and returns exactly
+`{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vault's routing key, the required `vambrace`
+argument of every other verb. This verb itself takes no routing key. v1 supports `create` only;
+any other action fails with `unsupported_action` (further actions are deliberately deferred, §5.6).
+
+```json
+{
+  "name": "vambrace",
+  "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. v1 supports create only; any other action fails with unsupported_action. This verb takes no routing key of its own.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "action": { "type": "string", "enum": ["create"] }
+    },
+    "required": ["action"]
   }
 }
 ```
 
 ## 4. Migration notes (source → Qatena)
 
+- Migration output lands in a vault created by the `vambrace` verb (`action: "create"`); there is
+  no separate migration database path, and `QATENA_DB` is retired (§1.9).
 - Source pins → `chain_headers` (+ blades from split points; migration script's problem, not the schema's).
 - Source `pins` prose references → `pointers` rows (`name-ref` for bare mentions; `source` /
   `part-of` where the prose is structural).
@@ -647,6 +714,7 @@ change. Renames and refiling are just this.
 
 1. **UUID storage → `BLOB(16)`** — the project's finalizing step (storage-only; tool surface unchanged).
 2. **`history` mechanism** — field-level old→new audit (tables/triggers), contract reserved.
-3. **Agent-authored log entries** — an 18th verb, if wanted; v1's `logs` are system-minted only.
+3. **Agent-authored log entries** — a 19th verb, if wanted; v1's `logs` are system-minted only.
 4. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale.
 5. **`SPEC.md` resolutions (a)–(f) pending review** — pointers carry no UUID (§1.7) · `pointer_kinds` register (§2) · sections upserted via `chain_put.sections` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
+6. **`vambrace` actions beyond `create`** — list / destroy / label, etc.; deliberately deferred until the project is close to finalizing.

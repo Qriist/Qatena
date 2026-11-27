@@ -1,7 +1,9 @@
 """Qatena entry point: `python -m qatena`.
 
-DB path: env QATENA_DB, else ./.qatena/qatena.db (parent dir auto-created).
-Bootstraps the schema, then serves MCP over stdio until EOF.
+Vault dir: env QATENA_VAULTS, else ./.qatena (auto-created). Each vault is one
+database file (<UUIDv7>.db) created by the vambrace verb — there is no default
+database; every call routes via its vambrace key. Serves MCP over stdio until
+stdin EOF.
 """
 
 import os
@@ -9,19 +11,12 @@ import sys
 
 
 def main() -> int:
-    from . import __version__, db, schema, server
+    from . import __version__, server
 
-    db_path = os.environ.get("QATENA_DB") or os.path.join(".", ".qatena", "qatena.db")
-    parent = os.path.dirname(os.path.abspath(db_path))
-    os.makedirs(parent, exist_ok=True)
-
-    conn = db.connect(db_path)
-    schema.bootstrap(conn)
-    print(f"qatena {__version__} ready", file=sys.stderr)
-    try:
-        return server.serve(conn)
-    finally:
-        conn.close()
+    vault_dir = os.environ.get("QATENA_VAULTS") or os.path.join(".", ".qatena")
+    os.makedirs(vault_dir, exist_ok=True)
+    print(f"qatena {__version__} ready (vaults: {os.path.abspath(vault_dir)})", file=sys.stderr)
+    return server.serve(vault_dir)
 
 
 if __name__ == "__main__":

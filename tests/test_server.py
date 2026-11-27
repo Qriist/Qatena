@@ -1,7 +1,9 @@
-"""stdio MCP smoke tests (SPEC 3): spawn `python -m qatena`, drive JSON-RPC line-by-line.
+"""stdio MCP smoke tests (SPEC 1.9, 3): spawn `python -m qatena` with a temp
+QATENA_VAULTS dir, drive newline-delimited JSON-RPC over stdio.
 
 Every readline carries a thread-based deadline so a hung server fails the test
-instead of hanging the suite.
+instead of hanging the suite. QATENA_DB is retired (SPEC 1.9) and is explicitly
+popped from the spawn env; routing is QATENA_VAULTS + the vambrace key.
 """
 import json
 import os
@@ -14,64 +16,82 @@ import threading
 import time
 import unittest
 
-from helpers import REPO_ROOT
+from qatena.uuid7 import new_uuid7
+from helpers import REPO_ROOT, UUID7_RE
 
-EXPECTED_TOOLS = {
+ROUTED_TOOLS = {
     "chain_put", "chain_delete", "chain_split", "chain_merge",
     "blade_insert", "blade_edit", "blade_move", "blade_delete",
     "batch", "pointer_add", "pointer_remove",
     "get", "search", "list", "pointers_of", "follow", "history",
 }
+EXPECTED_TOOLS = ROUTED_TOOLS | {"vambrace"}
 
 
 class ServerSmoke(unittest.TestCase):
     DEADLINE = 15  # seconds per line / wait
 
     def setUp(self):
-        self._tmp = tempfile.mkdtemp(prefix="qatena-srv-")
+        self._vaults = tempfile.mkdtemp(prefix="qatena-vaults-")
+        self._servers = []
+        self.proc, self._lines = self._spawn()
+        self._next_id = 0
+
+    def tearDown(self):
+        for proc in self._servers:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+        shutil.rmtree(self._vaults, ignore_errors=True)
+
+    # -- spawn ---------------------------------------------------------------
+    def _env(self):
         env = dict(os.environ)
+        env.pop("QATENA_DB", None)  # retired: routing is QATENA_VAULTS + keys
         env["PYTHONPATH"] = REPO_ROOT
-        env["QATENA_DB"] = os.path.join(self._tmp, "qatena.db")
+        env["QATENA_VAULTS"] = self._vaults
         env["PYTHONIOENCODING"] = "utf-8"
-        self.proc = subprocess.Popen(
+        return env
+
+    def _spawn(self):
+        """Spawn a server against the shared temp vaults dir and rebind the
+        transport state (self.proc / self._lines) to it, so tests that kill
+        the server can respawn with the same QATENA_VAULTS."""
+        proc = subprocess.Popen(
             [sys.executable, "-m", "qatena"],
-            cwd=REPO_ROOT, env=env,
+            cwd=REPO_ROOT, env=self._env(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8",
         )
-        self._next_id = 0
-        self._lines = queue.Queue()
+        self._servers.append(proc)
+        lines = queue.Queue()
 
         def _pump():
             # One thread owns stdout; the test thread pulls lines with
             # deadlines off the queue, so readers never race.
             try:
-                for line in self.proc.stdout:
-                    self._lines.put(line)
+                for line in proc.stdout:
+                    lines.put(line)
             except Exception as e:  # noqa: BLE001
-                self._lines.put(e)
-            self._lines.put(None)  # EOF sentinel
+                lines.put(e)
+            lines.put(None)  # EOF sentinel
 
         threading.Thread(target=_pump, daemon=True).start()
-
-    def tearDown(self):
-        if self.proc.poll() is None:
-            try:
-                self.proc.kill()
-            except OSError:
-                pass
-        try:
-            self.proc.wait(timeout=5)
-        except Exception:
-            pass
-        shutil.rmtree(self._tmp, ignore_errors=True)
+        self.proc, self._lines = proc, lines
+        return proc, lines
 
     # -- transport helpers ---------------------------------------------------
     def _readline_deadlined(self, timeout):
         """Fetch one queued stdout line; fail the test on timeout (hang).
 
         The blocking read itself happens in the daemon pump thread started in
-        setUp; this deadline lives on the queue pull, so a hung server fails
+        _spawn; this deadline lives on the queue pull, so a hung server fails
         the test instead of hanging the suite.
         """
         try:
@@ -116,6 +136,22 @@ class ServerSmoke(unittest.TestCase):
         self.assertNotIn("error", res, "JSON-RPC error calling %r: %r" % (name, res))
         return res["result"]
 
+    # -- verb helpers ----------------------------------------------------------
+    def _code(self, result):
+        """Error code of a tool result (isError=True payload)."""
+        return json.loads(result["content"][0]["text"])["error"]["code"]
+
+    def _create_vault(self):
+        """Call the vambrace verb and return the minted routing key."""
+        r = self._call_tool("vambrace", {"action": "create"})
+        self.assertFalse(r["isError"], "vambrace create failed: %r" % r)
+        body = json.loads(r["content"][0]["text"])
+        key = body["vambrace"]
+        self.assertRegex(key, UUID7_RE)
+        self.assertTrue(os.path.exists(os.path.join(self._vaults, key + ".db")),
+                        "vault file %s.db missing from %s" % (key, self._vaults))
+        return key
+
     # -- the smoke sequence ----------------------------------------------------
     def test_stdio_smoke(self):
         with self.subTest("initialize echoes protocolVersion and names qatena"):
@@ -138,38 +174,60 @@ class ServerSmoke(unittest.TestCase):
             self.assertIsNone(self._peek_deadlined(1.0),
                               "notifications/initialized produced a response line")
 
-        with self.subTest("tools/list returns exactly the 17 SPEC verbs"):
+        with self.subTest("tools/list returns 18 tools; 17 routed tools require vambrace"):
             res = self._request("tools/list")
             tools = res["result"]["tools"]
-            self.assertEqual(len(tools), 17)
+            self.assertEqual(len(tools), 18)
             self.assertEqual({t["name"] for t in tools}, EXPECTED_TOOLS)
             for t in tools:
                 self.assertIn("inputSchema", t)
                 self.assertIn("description", t)
+            for t in tools:
+                props = t["inputSchema"]["properties"]
+                if t["name"] == "vambrace":
+                    # the 18th verb takes no routing key of its own
+                    self.assertNotIn("vambrace", props)
+                    self.assertIn("action", t["inputSchema"]["required"])
+                else:
+                    self.assertEqual(props.get("vambrace", {}).get("type"), "string")
+                    self.assertIn("vambrace", t["inputSchema"]["required"])
 
-        with self.subTest("tools/call chain_put then get round-trips"):
-            r1 = self._call_tool("chain_put", {"name": "The Forge"})
-            self.assertFalse(r1["isError"])
+        with self.subTest("vambrace create -> exactly {'vambrace': uuid7} + bootstrapped file"):
+            r = self._call_tool("vambrace", {"action": "create"})
+            self.assertFalse(r["isError"], "vambrace create failed: %r" % r)
+            body = json.loads(r["content"][0]["text"])
+            self.assertEqual(list(body), ["vambrace"],
+                             "create returns exactly the routing key: %r" % body)
+            key = body["vambrace"]
+            self.assertRegex(key, UUID7_RE)
+            self.assertEqual(key[14], "7")
+            self.assertTrue(os.path.exists(os.path.join(self._vaults, key + ".db")))
+
+        with self.subTest("routed chain_put then get round-trips"):
+            r1 = self._call_tool("chain_put", {"vambrace": key, "name": "The Forge"})
+            self.assertFalse(r1["isError"], "chain_put failed: %r" % r1)
             body1 = json.loads(r1["content"][0]["text"])
-            cid = body1["id"]
             self.assertEqual(body1["name"], "The Forge")
-            r2 = self._call_tool("get", {"id": cid})
+            self.assertIn("log_id", body1)
+            r2 = self._call_tool("get", {"vambrace": key, "id": body1["id"]})
             self.assertFalse(r2["isError"])
             self.assertEqual(json.loads(r2["content"][0]["text"])["name"],
                              "The Forge")
 
         with self.subTest("verb-level error surfaces as isError with error JSON"):
             r = self._call_tool("get",
-                                {"id": "00000000-0000-7000-8000-000000000000"})
+                                {"vambrace": key,
+                                 "id": "00000000-0000-7000-8000-000000000000"})
             self.assertTrue(r["isError"])
-            self.assertEqual(json.loads(r["content"][0]["text"])["error"]["code"],
-                             "not_found")
+            self.assertEqual(self._code(r), "not_found")
 
-        with self.subTest("unknown verb name -> isError with not_found"):
+        with self.subTest("unknown verb: routing checked first, then the verb layer"):
             r = self._call_tool("definitely_not_a_verb")
             self.assertTrue(r["isError"])
-            body = json.loads(r["content"][0]["text"])
-            self.assertEqual(body["error"]["code"], "not_found")
+            self.assertEqual(self._code(r), "missing_vambrace")
+            r = self._call_tool("definitely_not_a_verb", {"vambrace": key})
+            self.assertTrue(r["isError"])
+            self.assertEqual(self._code(r), "not_found")
 
         with self.subTest("unknown JSON-RPC method -> -32601"):
             res = self._request("no/such/method")
@@ -182,7 +240,100 @@ class ServerSmoke(unittest.TestCase):
             self.assertEqual(msg["error"]["code"], -32700)
             self.assertIsNone(msg.get("id"))
 
-        with self.subTest("stdin close -> clean exit 0"):
-            self.proc.stdin.close()
-            self.proc.wait(timeout=self.DEADLINE)
-            self.assertEqual(self.proc.returncode, 0)
+    def test_fail_closed_matrix(self):
+        with self.subTest("missing key (absent, empty, non-string) -> missing_vambrace"):
+            for args in ({}, {"vambrace": ""}, {"vambrace": None},
+                         {"vambrace": 42}, {"vambrace": ["k"]}):
+                r = self._call_tool("chain_put", args)
+                self.assertTrue(r["isError"], "args %r should fail closed" % args)
+                self.assertEqual(self._code(r), "missing_vambrace")
+
+        with self.subTest("malformed key -> malformed_vambrace"):
+            v7 = new_uuid7()
+            bad = (
+                "not-a-uuid",       # garbage
+                "abc",              # too short
+                v7.upper(),         # uppercase hex
+                v7[:14] + "4" + v7[15:],   # version-4 nibble
+                v7 + "0",           # 37 chars
+                v7[:9] + v7[10:],   # missing hyphen
+            )
+            for k in bad:
+                r = self._call_tool("chain_put", {"vambrace": k})
+                self.assertTrue(r["isError"], "key %r should fail closed" % k)
+                self.assertEqual(self._code(r), "malformed_vambrace")
+
+        with self.subTest("well-formed key, no vault file -> unknown_vambrace"):
+            ghost = new_uuid7()  # never created via the vambrace verb
+            r = self._call_tool("chain_put", {"vambrace": ghost})
+            self.assertTrue(r["isError"])
+            self.assertEqual(self._code(r), "unknown_vambrace")
+
+    def test_vambrace_unsupported_actions(self):
+        with self.subTest("any action but create -> unsupported_action"):
+            for action in ("list", "destroy", "CREATE"):
+                r = self._call_tool("vambrace", {"action": action})
+                self.assertTrue(r["isError"])
+                self.assertEqual(self._code(r), "unsupported_action")
+
+        with self.subTest("missing action -> unsupported_action"):
+            r = self._call_tool("vambrace", {})
+            self.assertTrue(r["isError"])
+            self.assertEqual(self._code(r), "unsupported_action")
+
+        with self.subTest("stray routing key on the verb itself is ignored"):
+            r = self._call_tool("vambrace",
+                                {"action": "create", "vambrace": new_uuid7()})
+            self.assertFalse(r["isError"])
+            self.assertRegex(json.loads(r["content"][0]["text"])["vambrace"], UUID7_RE)
+
+    def test_batch_takes_key_once_at_top_level(self):
+        key = self._create_vault()
+        r = self._call_tool("batch", {
+            "vambrace": key,
+            "ops": [
+                {"op": "chain_put", "args": {"name": "Batch A"}},
+                {"op": "chain_put", "args": {"name": "Batch B"}},
+            ],
+        })
+        self.assertFalse(r["isError"], "batch failed: %r" % r)
+        body = json.loads(r["content"][0]["text"])
+        self.assertEqual(len(body["ops"]), 2)
+        self.assertIn("log_id", body)  # one transaction, one minted log
+        self.assertEqual(sorted(op["name"] for op in body["ops"]),
+                         ["Batch A", "Batch B"])
+        # round-trip one of the batched chains through the same key
+        cid = body["ops"][0]["id"]
+        r2 = self._call_tool("get", {"vambrace": key, "id": cid})
+        self.assertFalse(r2["isError"])
+        self.assertEqual(json.loads(r2["content"][0]["text"])["name"], "Batch A")
+        # batch without the key fails closed at the routing layer
+        r3 = self._call_tool("batch",
+                             {"ops": [{"op": "chain_put", "args": {"name": "X"}}]})
+        self.assertTrue(r3["isError"])
+        self.assertEqual(self._code(r3), "missing_vambrace")
+
+    def test_routing_survives_server_restart(self):
+        key = self._create_vault()
+        r = self._call_tool("chain_put",
+                            {"vambrace": key, "name": "Across Restart"})
+        self.assertFalse(r["isError"])
+        cid = json.loads(r["content"][0]["text"])["id"]
+
+        # kill the first server; routing state is the vault files themselves,
+        # so a respawned server with the same QATENA_VAULTS routes the same key
+        self.proc.kill()
+        self.proc.wait(timeout=self.DEADLINE)
+        self._spawn()  # rebind self.proc / self._lines to the respawn
+
+        r = self._call_tool("get", {"vambrace": key, "id": cid})
+        self.assertFalse(r["isError"])
+        self.assertEqual(json.loads(r["content"][0]["text"])["name"],
+                         "Across Restart")
+
+    def test_stdin_close_clean_exit(self):
+        res = self._request("ping")
+        self.assertEqual(res["result"], {})
+        self.proc.stdin.close()
+        self.proc.wait(timeout=self.DEADLINE)
+        self.assertEqual(self.proc.returncode, 0)
