@@ -173,11 +173,11 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
   `open` on mint only. `action: "delete"`: by id or name; incoming reblades preserved and
   reported. Reads stay on the generic `get` / `list` / `search` verbs.
 
-**Deflected writes**
+**Deflected (Failed) writes**
 - `deflected_write` — the eraser for the failed content-write cache: `action: "clear"` by
   `id` (one row) or `group_id` (a whole failed batch), exactly one required. Every failed
-  content-write call (verb + canonical args) is parked per-vambrace in `deflected_writes` —
-  read through `list` (space `deflected_write`), auto-cleared in-transaction by an
+  content-write call (verb + canonical args) is parked per-vambrace in the `deflected_writes`
+  table — read through `list` (space `deflected_write`), auto-cleared in-transaction by an
   identical successful write. Memory, not an execution queue: `replay` is rejected (SPEC §3.20).
 
 **Reads**
