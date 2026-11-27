@@ -1,4 +1,4 @@
-"""The 17-verb surface of SPEC 3, behind one dispatch.
+"""The 18-verb surface of SPEC 3, behind one dispatch.
 
     execute(conn, verb, args) -> dict   (pure JSON-serializable result)
 
@@ -21,6 +21,7 @@ Structural rules implemented here (SPEC 1):
 """
 
 import json
+import re
 import sqlite3
 
 from .autolink import load_aliases, analyze, mint_name_refs
@@ -74,6 +75,14 @@ def _resolve_endpoint(conn, uuid):
 
 
 # ------------------------------------------------------------ small helpers
+
+# The id property pattern of the tool schemas: a 36-char lowercase UUID.
+# Qatena mints UUIDv7; this check validates the SHAPE only, so a well-formed
+# but unknown uuid is not_found, never validation_failed.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
 
 def _need_str(value, what):
     if not isinstance(value, str) or not value:
@@ -811,6 +820,219 @@ def _h_batch(conn, args, tx):
     return {"ops": results}, f"batch ({len(ops)} ops)", "mixed"
 
 
+# -------------------------------------------------------------- open_item
+
+# Contract (SPEC freeform paragraph): all fields except the addressing key are
+# OPTIONAL and presence-masked; explicit null clears a stored field, absent
+# leaves it unchanged. Column map: contract field -> storage column.
+_OI_INT_FIELDS = ("current", "pending", "total")      # freeform_<f> INTEGER
+_OI_STR_FIELDS = ("next", "last", "due", "priority")  # freeform_<f> TEXT
+
+
+def _oi_column(field):
+    return field if field == "text" else f"freeform_{field}"
+
+
+def _oi_check_state(conn, state):
+    """state validates against the open_item_states register (not a
+    hardcoded set); state is NOT NULL, so an explicit null is rejected."""
+    if state is None:
+        raise VerbError("validation_failed", "state is not clearable (explicit null rejected)")
+    if not isinstance(state, str):
+        raise VerbError("validation_failed", "state must be a string")
+    if conn.execute("SELECT 1 FROM open_item_states WHERE name = ?", (state,)).fetchone() is None:
+        known = [r["name"] for r in conn.execute("SELECT name FROM open_item_states ORDER BY name")]
+        raise VerbError("validation_failed", f"unknown state {state!r} (known: {known})")
+    return state
+
+
+def _oi_validate_fields(conn, args):
+    """Validate the supplied optional fields. Returns (state, {field: value})
+    with only the supplied fields; state is None when absent (default applies
+    on mint only)."""
+    state = _oi_check_state(conn, args["state"]) if "state" in args else None
+    sets = {}
+    if "text" in args:
+        v = args["text"]
+        if v is not None and not isinstance(v, str):
+            raise VerbError("validation_failed", "text must be a string")
+        sets["text"] = v
+    for f in _OI_INT_FIELDS:
+        if f in args:
+            v = args[f]
+            if v is not None and (not isinstance(v, int) or isinstance(v, bool)):
+                raise VerbError("validation_failed", f"{f} must be an integer")
+            sets[f] = v
+    for f in _OI_STR_FIELDS:
+        if f in args:
+            v = args[f]
+            if v is not None and not isinstance(v, str):
+                raise VerbError("validation_failed", f"{f} must be a string")
+            sets[f] = v
+    return state, sets
+
+
+def _oi_render(row):
+    """The item's row as all non-null fields (NULLs omitted, not zero-filled);
+    created/updated rendered as ISO-8601 (as _bare does)."""
+    out = {}
+    for k in row.keys():
+        v = row[k]
+        if v is None:
+            continue
+        out[k] = ns_to_iso(v) if k in ("created", "updated") else v
+    return out
+
+
+def _h_open_item(conn, args, tx):
+    """open_item: the single action-driven write verb for the open_item space.
+
+    put = create-or-update (presence-masked, idempotent by name, hard
+    nameless guard); delete = by id or name, incoming reblades reported.
+    """
+    action = args.get("action")
+    if action not in ("put", "delete"):
+        raise VerbError("validation_failed", f"open_item action must be 'put' or 'delete', got {action!r}")
+    if action == "put":
+        return _h_open_item_put(conn, args, tx)
+    return _h_open_item_delete(conn, args, tx)
+
+
+def _h_open_item_put(conn, args, tx):
+    """Presence-masked create-or-update (SPEC freeform paragraph).
+
+    Addressing: id (shape-checked) takes precedence over name; neither
+    supplied -> validation_failed. HARD GUARD: a missing or empty name never
+    mints -- a nameless put is an update of a resolvable id or not_found.
+    A name-addressed put whose name resolves to an existing item is
+    idempotent: no clobber, no error, supplied fields applied as an update.
+
+    No-op put: the put is still recorded in the log body, but nothing changes
+    -- no 'modified' ref (the log row simply carries no log_refs rows) and
+    updated is NOT bumped.
+    """
+    name = args.get("name")
+    if name is not None:
+        if not isinstance(name, str):
+            raise VerbError("validation_failed", "name must be a string")
+        if not name:
+            name = None  # hard guard: an empty name is a missing name
+    i = args.get("id")
+    if i is not None and (not isinstance(i, str) or not _UUID_RE.match(i)):
+        raise VerbError("validation_failed", "id must be a uuid string")
+    if name is None and i is None:
+        raise VerbError("validation_failed", "open_item put requires id or name")
+
+    row = None
+    if i is not None:
+        row = conn.execute("SELECT * FROM open_items WHERE id = ?", (i,)).fetchone()
+        if row is None:
+            # hard guard: an id that does not resolve to an open item is
+            # rejected, with or without a name (creation needs a non-empty
+            # name; an id-addressed put never mints).
+            raise VerbError("not_found", f"id {i} does not resolve to an open item")
+    elif name is not None:
+        row = conn.execute("SELECT * FROM open_items WHERE name = ?", (name,)).fetchone()
+
+    state, sets = _oi_validate_fields(conn, args)
+
+    if row is None:
+        # Mint: always through a non-empty name.
+        oid = new_uuid7()
+        conn.execute(
+            "INSERT INTO open_items (id, name, state, text, created, updated, "
+            "freeform_current, freeform_pending, freeform_total, "
+            "freeform_next, freeform_last, freeform_due, freeform_priority) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (oid, name, state if state is not None else "open",
+             sets.get("text"), tx.now, tx.now,
+             sets.get("current"), sets.get("pending"), sets.get("total"),
+             sets.get("next"), sets.get("last"), sets.get("due"), sets.get("priority")),
+        )
+        tx.ref(oid, "created")
+        final_name, created = name, True
+    else:
+        oid = row["id"]
+        created = False
+        changed = []
+        renamed = name is not None and row["name"].casefold() != name.casefold()
+        if renamed:
+            # id-addressed put with a differing name = rename (as chain_put).
+            dup = conn.execute(
+                "SELECT id FROM open_items WHERE name = ? AND id <> ?", (name, oid)
+            ).fetchone()
+            if dup is not None:
+                raise VerbError("duplicate_name", f"open item name {name!r} is taken (id {dup['id']})")
+            changed.append(("name", name))
+        if state is not None and row["state"] != state:
+            changed.append(("state", state))
+        for f, v in sets.items():
+            if row[_oi_column(f)] != v:
+                changed.append((_oi_column(f), v))
+        if changed:
+            cols = ", ".join(c + " = ?" for c, _ in changed)
+            conn.execute(
+                f"UPDATE open_items SET {cols}, updated = ? WHERE id = ?",
+                [v for _, v in changed] + [tx.now, oid],
+            )
+            tx.ref(oid, "modified")
+        # A no-op put changes nothing: no 'modified' ref, updated untouched.
+        final_name = name if renamed else row["name"]
+
+    fresh = conn.execute("SELECT * FROM open_items WHERE id = ?", (oid,)).fetchone()
+    out = _oi_render(fresh)
+    if i is None:
+        # Name-addressed call (the mint path: fresh mint or found-existing):
+        # the created-vs-found marker is ALWAYS present on this path only.
+        # It carries the key "created", so on a name-addressed response it
+        # stands in for the row's created timestamp (recoverable via get).
+        out["created"] = created
+    tx.record({"op": "open_item_put", "item": oid, "name": final_name, "created": created})
+    return out, f'open_item put "{final_name}"', "open_item"
+
+
+def _find_open_item(conn, args):
+    """open_item delete addressing: id takes precedence (as _find_chain)."""
+    i = args.get("id")
+    n = args.get("name")
+    if i is not None:
+        if not isinstance(i, str) or not _UUID_RE.match(i):
+            raise VerbError("validation_failed", "id must be a uuid string")
+        row = conn.execute("SELECT * FROM open_items WHERE id = ?", (i,)).fetchone()
+        if row is None:
+            raise VerbError("not_found", f"open item {i} not found")
+        if n is not None:
+            _need_str(n, "name")
+            if row["name"].casefold() != n.casefold():
+                raise VerbError(
+                    "validation_failed",
+                    f"name {n!r} does not match open item {i} (current name {row['name']!r})",
+                )
+        return row
+    if n is not None:
+        _need_str(n, "name")
+        row = conn.execute("SELECT * FROM open_items WHERE name = ?", (n,)).fetchone()
+        if row is None:
+            raise VerbError("not_found", f"open item {n!r} not found")
+        return row
+    raise VerbError("not_found", "open_item delete requires id or name")
+
+
+def _h_open_item_delete(conn, args, tx):
+    row = _find_open_item(conn, args)
+    oid, oname = row["id"], row["name"]
+    incoming = conn.execute("SELECT * FROM reblades WHERE dst_uuid = ?", (oid,)).fetchall()
+    conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (oid,))  # outgoing
+    conn.execute("DELETE FROM open_items WHERE id = ?", (oid,))
+    tx.ref(oid, "deleted")
+    tx.record({"op": "open_item_delete", "item": oid, "name": oname})
+    return (
+        {"id": oid, "name": oname, "incoming": [_reblade_dict(r) for r in incoming]},
+        f'open_item delete "{oname}"',
+        "open_item",
+    )
+
+
 # ----------------------------------------------------------------- read verbs
 
 def _h_get(conn, args):
@@ -1141,6 +1363,7 @@ _WRITE_DISPATCH = {
     "reblade_add": _h_reblade_add,
     "reblade_remove": _h_reblade_remove,
     "batch": _h_batch,
+    "open_item": _h_open_item,
 }
 
 _READ_HANDLERS = {
@@ -1152,12 +1375,12 @@ _READ_HANDLERS = {
     "history": _h_history,
 }
 
-# 11 write + 6 read = 17 verbs
+# 12 write + 6 read = 18 verbs
 ALL_VERBS = tuple(_WRITE_DISPATCH) + tuple(_READ_HANDLERS)
 
 
 def execute(conn, verb, args):
-    """Dispatch one of the 17 SPEC 3 verbs. Pure JSON-serializable dict, or VerbError."""
+    """Dispatch one of the 18 SPEC 3 verbs. Pure JSON-serializable dict, or VerbError."""
     if not isinstance(args, dict):
         args = {}
     read = _READ_HANDLERS.get(verb)

@@ -16,7 +16,7 @@ import sys
 from . import __version__, autoexport, db, schema, uuid7
 from .verbs import VerbError, _WRITE_DISPATCH, _resolve_endpoint, execute
 
-# The 18 tools, copied from SPEC.md 3.1-3.18 (same JSON, no rewording).
+# The 19 tools, copied from SPEC.md 3.1-3.19 (same JSON, no rewording).
 TOOLS = [
     {
         "name": "chain_put",
@@ -422,6 +422,107 @@ TOOLS = [
                 "src",
                 "dst",
                 "kind"
+            ]
+        }
+    },
+    {
+        "name": "open_item",
+        "description": "Open-item tracking row (the human-driven space; the agent is a caretaker). action=put: create-or-update, presence-masked (only supplied fields change; explicit null clears a stored field, absent leaves it unchanged). Address by id (takes precedence) or name; a name-addressed put whose name already resolves to an item is idempotent (no clobber, no error; supplied fields apply as an update) and the response always carries the created marker (true on a fresh mint, false on a found one) on that path only. Hard guard: a missing/empty name plus an id that does not resolve to an open item is rejected not_found - creation always goes through a non-empty name, a nameless put can never mint. The body and all seven freeform fields are optional - a pure tracking row has no body. action=delete: by id or name; the row is deleted and its incoming reblades are preserved and reported in the response. State is validated against the open_item_states register (default open on mint); state is not clearable. Returns the item's non-null fields with the minted log id (put) or the deleted item with its incoming reblades (delete).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "put",
+                        "delete"
+                    ],
+                    "description": "put = create-or-update presence-masked with explicit-null-clears; idempotent name-addressed put (always-present created marker on that path only); hard guard: missing/empty name + unresolvable id -> not_found. delete = by id or name, incoming reblades preserved and reported."
+                },
+                "id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Open item uuid. Takes precedence over name."
+                },
+                "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Open item name. Creation key on a mint; a rename when supplied on an id-addressed put."
+                },
+                "state": {
+                    "type": "string",
+                    "enum": [
+                        "open",
+                        "shelved",
+                        "resolved"
+                    ],
+                    "description": "Item state (default open on mint; validated against the open_item_states register)."
+                },
+                "text": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "description": "Item body. Optional - a pure tracking row has no body. Omit to leave unchanged; explicit null clears."
+                },
+                "current": {
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "description": "Quantity tracking: current. Omit to leave unchanged; explicit null clears."
+                },
+                "pending": {
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "description": "Quantity tracking: pending. Omit to leave unchanged; explicit null clears."
+                },
+                "total": {
+                    "type": [
+                        "integer",
+                        "null"
+                    ],
+                    "description": "Quantity tracking: total. Omit to leave unchanged; explicit null clears."
+                },
+                "next": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "description": "Key-position tracking: next. Omit to leave unchanged; explicit null clears."
+                },
+                "last": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "description": "Key-position tracking: last. Omit to leave unchanged; explicit null clears."
+                },
+                "due": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "description": "Due date label. Omit to leave unchanged; explicit null clears."
+                },
+                "priority": {
+                    "type": [
+                        "string",
+                        "null"
+                    ],
+                    "description": "Priority label. Omit to leave unchanged; explicit null clears."
+                }
+            },
+            "required": [
+                "vambrace",
+                "action"
             ]
         }
     },

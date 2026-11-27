@@ -253,7 +253,7 @@ CREATE TABLE terms (
 );
 ```
 
-**Freeform tracking (for when the open_item contract is built).** `open_items` carries seven NULL-defaulted freeform tracking columns — `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER), `freeform_next` / `freeform_last` (TEXT), and `freeform_due` / `freeform_priority` (TEXT). When the open_item contract (write verb) is built, add seven OPTIONAL fields to the open_item contract: `current` / `pending` / `total` / `next` / `last` / `due` / `priority` (omitting the `freeform_` prefix). The first five are common-use columns for different types of tasks where you need to track a quantity or key-based position — beats parsing the item body all the time for one value; `due` / `priority` sit outside that pattern but are core to an open item's tracking needs (user-directed addition). The item body (`text`) is likewise OPTIONAL — an open item may be a pure tracking row (name + state + freeform fields, no body): some items are massive descriptive bodies that track a single number, and with an optional body a single incremental freeform update never has to re-supply it. Contract shape (user-directed): **the minimum field set for a call on an existing item is `vambrace` + `action` + `id`** — the routing key, the operation, the target item. For a **mint**, `name` takes `id`'s place — the item does not exist yet, and the name is the creation key (`id` is minted); a mint whose name **already** resolves to an existing item is idempotent — it returns the full existing row, i.e. **all non-null fields** (NULL fields omitted, not zero-filled — user clarification: in the open_item context "full row" means the row as it actually is, so a sparse tracking row comes back sparse), with no clobber, no error; the mint's response **always** carries a created-vs-found marker (`created`: `true` on a fresh mint, `false` on a found one) — user-directed: it should always be there in the mint response (human-facing clarity; minting is low-frequency relative to other operations, so the field is not a token eater), while the optimized paths (id-addressed updates, reads) do not need it. A repeated name is a lookup, not a fault, on the human-driven surface. All other fields are OPTIONAL — `name` on an id-addressed call (a rename, as `chain_put` is), `state`, the body, and all seven freeform fields — presence-masked, as `chain_put` is; the layer fills the storage invariants (`state` defaults to `open` on creation). Addressing guard: a request arriving with a **missing or empty `name`** must first be checked against the supplied `id` — if the UUID resolves to an existing open item the request is an update of it; if it does not resolve the request is rejected (`not_found`). Consequence: creation always goes through a non-empty name; a nameless request can never mint a new item. The guard is a hard one, not a convention: `open_items` is the one space where the human drives things almost manually, and that surface must not get mangled by the agent. Surface shape (user-directed): the open_item write surface is a **single `action`-driven verb** (like `vambrace`), not a set of verbs — the load-bearing verb count is approaching the ~25 enabled-tools threshold where goose degrades, and the write operations (a `put` at minimum; lifecycle actions as they arise) fit one verb with an `action` enum. Reads stay on the generic `get` / `list` / `search` verbs (space `open_item`); the addressing guard above applies to the `put` action. No further additions planned: the remaining candidates are derivatives of the set (`done = total − pending`) or speculative.
+**Freeform tracking (open_item contract — built).** `open_items` carries seven NULL-defaulted freeform tracking columns — `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER), `freeform_next` / `freeform_last` (TEXT), and `freeform_due` / `freeform_priority` (TEXT). The open_item write verb (SPEC §3.19) exposes seven OPTIONAL fields: `current` / `pending` / `total` / `next` / `last` / `due` / `priority` (omitting the `freeform_` prefix). The first five are common-use columns for different types of tasks where you need to track a quantity or key-based position — beats parsing the item body all the time for one value; `due` / `priority` sit outside that pattern but are core to an open item's tracking needs (user-directed addition). The item body (`text`) is likewise OPTIONAL — an open item may be a pure tracking row (name + state + freeform fields, no body): some items are massive descriptive bodies that track a single number, and with an optional body a single incremental freeform update never has to re-supply it. Contract shape (user-directed): **the minimum field set for a call on an existing item is `vambrace` + `action` + `id`** — the routing key, the operation, the target item. For a **mint**, `name` takes `id`'s place — the item does not exist yet, and the name is the creation key (`id` is minted); a mint whose name **already** resolves to an existing item is idempotent — it returns the full existing row, i.e. **all non-null fields** (NULL fields omitted, not zero-filled — user clarification: in the open_item context "full row" means the row as it actually is, so a sparse tracking row comes back sparse), with no clobber, no error; the mint's response **always** carries a created-vs-found marker (`created`: `true` on a fresh mint, `false` on a found one) — user-directed: it should always be there in the mint response (human-facing clarity; minting is low-frequency relative to other operations, so the field is not a token eater), while the optimized paths (id-addressed updates, reads) do not need it. Key-collision resolution (implementation): the marker and the row's `created` timestamp share the key `created` — on a name-addressed response the boolean marker takes the slot (the row's created timestamp is omitted there, recoverable via `get`); on an id-addressed response `created` renders as the ISO timestamp and no marker is present. A no-op put (nothing changed) mints its log row as any write but refs nothing (the log row carries no `log_refs` rows) and does not bump `updated`. A repeated name is a lookup, not a fault, on the human-driven surface. All other fields are OPTIONAL — `name` on an id-addressed call (a rename, as `chain_put` is), `state`, the body, and all seven freeform fields — presence-masked, as `chain_put` is; the layer fills the storage invariants (`state` defaults to `open` on creation). Addressing guard: a request arriving with a **missing or empty `name`** must first be checked against the supplied `id` — if the UUID resolves to an existing open item the request is an update of it; if it does not resolve the request is rejected (`not_found`). Consequence: creation always goes through a non-empty name; a nameless request can never mint a new item. The guard is a hard one, not a convention: `open_items` is the one space where the human drives things almost manually, and that surface must not get mangled by the agent. Surface shape (user-directed): the open_item write surface is a **single `action`-driven verb** (like `vambrace`), not a set of verbs — the load-bearing verb count is approaching the ~25 enabled-tools threshold where goose degrades, and the write operations fit one verb with an `action` enum — the settled action set is `put` + `delete` (user-directed: this is a largely freeform table, so the set is deliberately minimal; no separate rename action — id + name on `put` is the rename — and no state actions: `state` is a field). Reads stay on the generic `get` / `list` / `search` verbs (space `open_item`); the addressing guard above applies to the `put` action. No further additions planned: the remaining candidates are derivatives of the set (`done = total − pending`) or speculative.
 
 ### Autoexport
 
@@ -274,7 +274,7 @@ explicit indexes exist (`idx_csm_intention`, `idx_reblades_dst`, `idx_logs_creat
 `idx_log_refs_uuid`, `idx_blades_chain`); all tables are personal-project scale — no
 speculative indexes. `search` is LIKE-probe based in v1 (FTS5 is a later optimization, §5).
 
-## 3. Verb surface (18 MCP tools)
+## 3. Verb surface (19 MCP tools)
 
 **Shared field definitions** (used throughout the schemas below):
 
@@ -840,6 +840,65 @@ idempotently.
 The key-bearing actions' `vambrace` argument is the routing key itself (§1.9); the schema
 carries it as an optional property (UUIDv7 pattern) — `equip` takes no key, so it is omitted
 there — and it is validated fail-closed exactly like every routed verb.
+
+### 3.19 `open_item`
+
+The write surface for the `open_item` space — the human-driven space where the agent is a
+caretaker. A single `action`-driven verb (as `vambrace` is): actions `put` | `delete`; any
+other action fails `validation_failed`.
+
+`put` — create-or-update, **presence-masked** (only supplied fields change; an explicit
+`null` clears a stored field, an absent one leaves it unchanged). Addressing: `id` (uuid,
+shape-checked) takes precedence over `name`; neither supplied → `validation_failed`.
+**Hard guard:** a request with a missing or empty `name` is first checked against the
+supplied `id` — a resolvable `id` makes the call an update of that item; an unresolvable one
+is rejected `not_found`. Creation always goes through a non-empty name; a nameless put can
+never mint. A name-addressed put whose name already resolves is **idempotent** (no clobber,
+no error; supplied fields apply as an update of the found item — repeated names are lookups,
+not faults). `id` + a differing name is a **rename** (as `chain_put`); a rename onto another
+item's name fails `duplicate_name`. `state` validates against the `open_item_states` register
+(`validation_failed` otherwise; not clearable) and defaults to `open` on mint only.
+**Response:** the item's row as all non-null fields (NULLs omitted, not zero-filled),
+`created`/`updated` as iso, plus `log_id`. The name-addressed path (fresh mint or found)
+**always** carries the created-vs-found marker `created` (`true`/`false`); on that path the
+marker takes the `created` key, so the row's created timestamp is omitted (recoverable via
+`get`). The id-addressed path carries no marker (`created` renders as the ISO timestamp).
+A no-op put mints its log row but refs nothing and does not bump `updated`.
+
+`delete` — by `id` or `name` (an `id` + `name` mismatch is `validation_failed`; neither or
+unresolvable is `not_found`). The row is deleted; its **outgoing** reblades are
+cascade-deleted (no dangling endpoints) and its **incoming** reblades are preserved and
+reported, as `chain_delete` reports them. Response: `{id, name, incoming: [...]}` + `log_id`.
+
+Both actions mint one log row (area `open_item`) and join the routed write path, so the
+post-commit autoexport check runs (an open item can never be an autoexport root, so the
+check is a no-op for them).
+
+```json
+{
+  "name": "open_item",
+  "description": "Open-item tracking row (the human-driven space; the agent is a caretaker). action=put: create-or-update, presence-masked (only supplied fields change; explicit null clears a stored field, absent leaves it unchanged). Address by id (takes precedence) or name; a name-addressed put whose name already resolves to an item is idempotent (no clobber, no error; supplied fields apply as an update) and the response always carries the created marker (true on a fresh mint, false on a found one) on that path only. Hard guard: a missing/empty name plus an id that does not resolve to an open item is rejected not_found - creation always goes through a non-empty name, a nameless put can never mint. The body and all seven freeform fields are optional - a pure tracking row has no body. action=delete: by id or name; the row is deleted and its incoming reblades are preserved and reported in the response. State is validated against the open_item_states register (default open on mint); state is not clearable. Returns the item's non-null fields with the minted log id (put) or the deleted item with its incoming reblades (delete).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required - calls without a known key fail closed; there is no default vambrace." },
+      "action": { "type": "string", "enum": ["put", "delete"], "description": "put = create-or-update presence-masked with explicit-null-clears; idempotent name-addressed put (always-present created marker on that path only); hard guard: missing/empty name + unresolvable id -> not_found. delete = by id or name, incoming reblades preserved and reported." },
+      "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Open item uuid. Takes precedence over name." },
+      "name": { "type": "string", "minLength": 1, "description": "Open item name. Creation key on a mint; a rename when supplied on an id-addressed put." },
+      "state": { "type": "string", "enum": ["open", "shelved", "resolved"], "description": "Item state (default open on mint; validated against the open_item_states register)." },
+      "text": { "type": ["string", "null"], "description": "Item body. Optional - a pure tracking row has no body. Omit to leave unchanged; explicit null clears." },
+      "current": { "type": ["integer", "null"], "description": "Quantity tracking: current. Omit to leave unchanged; explicit null clears." },
+      "pending": { "type": ["integer", "null"], "description": "Quantity tracking: pending. Omit to leave unchanged; explicit null clears." },
+      "total": { "type": ["integer", "null"], "description": "Quantity tracking: total. Omit to leave unchanged; explicit null clears." },
+      "next": { "type": ["string", "null"], "description": "Key-position tracking: next. Omit to leave unchanged; explicit null clears." },
+      "last": { "type": ["string", "null"], "description": "Key-position tracking: last. Omit to leave unchanged; explicit null clears." },
+      "due": { "type": ["string", "null"], "description": "Due date label. Omit to leave unchanged; explicit null clears." },
+      "priority": { "type": ["string", "null"], "description": "Priority label. Omit to leave unchanged; explicit null clears." }
+    },
+    "required": ["vambrace", "action"]
+  }
+}
+```
 
 ## 4. Migration notes (source → Qatena)
 
