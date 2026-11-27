@@ -64,6 +64,8 @@ class OpenItemsFreeform(QatenaTestCase):
         ("freeform_total", "INTEGER"),
         ("freeform_next", "TEXT"),
         ("freeform_last", "TEXT"),
+        ("freeform_due", "TEXT"),
+        ("freeform_priority", "TEXT"),
     )
 
     # Pre-change open_items DDL, verbatim from git show HEAD:qatena/schema.py
@@ -87,15 +89,17 @@ class OpenItemsFreeform(QatenaTestCase):
             self.assertEqual(cols.get(name), decl)
 
     def test_insert_without_freeform_defaults_null(self):
-        self.insert_open_item("Task One")  # helper omits the five columns
+        self.insert_open_item("Task One")  # helper omits the seven columns
         row = self.conn.execute(
             "SELECT freeform_current, freeform_pending, freeform_total, "
-            "freeform_next, freeform_last FROM open_items").fetchone()
-        self.assertEqual(tuple(row), (None, None, None, None, None))
+            "freeform_next, freeform_last, freeform_due, "
+            "freeform_priority FROM open_items").fetchone()
+        self.assertEqual(
+            tuple(row), (None, None, None, None, None, None, None))
 
     def test_legacy_db_migrates_in_place(self):
         # A db whose open_items predates the freeform columns: bootstrap
-        # must add all five in place, and a second run must no-op.
+        # must add all seven in place, and a second run must no-op.
         con = db.connect(os.path.join(self._tmp, "legacy.db"))
         con.execute(
             "CREATE TABLE open_item_states (name TEXT NOT NULL PRIMARY KEY)")
@@ -106,6 +110,32 @@ class OpenItemsFreeform(QatenaTestCase):
         self.assertEqual(
             [c for c in self._columns(con)],
             ["id", "name", "state", "text", "created", "updated"])
+        schema.bootstrap(con)
+        cols = self._columns(con)
+        for name, decl in self.FREEFORM:
+            self.assertEqual(cols.get(name), decl)
+        schema.bootstrap(con)  # second run: idempotent, no error
+        self.assertEqual(self._columns(con), cols)
+        con.close()
+
+    def test_post_five_db_gains_due_priority(self):
+        # A db migrated at the five-column point: it has the original five
+        # freeform columns but not due/priority; bootstrap must add the
+        # two in place, and a second run must no-op.
+        con = db.connect(os.path.join(self._tmp, "post_five.db"))
+        con.execute(
+            "CREATE TABLE open_item_states (name TEXT NOT NULL PRIMARY KEY)")
+        con.execute(
+            "INSERT INTO open_item_states (name) "
+            "VALUES ('open'), ('shelved'), ('resolved')")
+        con.execute(self.LEGACY_OPEN_ITEMS)
+        for name, decl in self.FREEFORM[:5]:
+            con.execute(
+                "ALTER TABLE open_items ADD COLUMN %s %s DEFAULT NULL"
+                % (name, decl))
+        cols = self._columns(con)
+        self.assertNotIn("freeform_due", cols)
+        self.assertNotIn("freeform_priority", cols)
         schema.bootstrap(con)
         cols = self._columns(con)
         for name, decl in self.FREEFORM:

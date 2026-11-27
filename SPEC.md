@@ -220,11 +220,13 @@ CREATE TABLE open_items (
   text    TEXT,
   created INTEGER NOT NULL,
   updated INTEGER NOT NULL,
-  freeform_current INTEGER DEFAULT NULL,
-  freeform_pending INTEGER DEFAULT NULL,
-  freeform_total   INTEGER DEFAULT NULL,
-  freeform_next    TEXT    DEFAULT NULL,
-  freeform_last    TEXT    DEFAULT NULL
+  freeform_current  INTEGER DEFAULT NULL,
+  freeform_pending  INTEGER DEFAULT NULL,
+  freeform_total    INTEGER DEFAULT NULL,
+  freeform_next     TEXT    DEFAULT NULL,
+  freeform_last     TEXT    DEFAULT NULL,
+  freeform_due      TEXT    DEFAULT NULL,
+  freeform_priority TEXT    DEFAULT NULL
 );
 
 CREATE TABLE ruling_states (
@@ -251,7 +253,7 @@ CREATE TABLE terms (
 );
 ```
 
-**Freeform tracking (for when the open_item contract is built).** `open_items` carries five NULL-defaulted freeform tracking columns — `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER) and `freeform_next` / `freeform_last` (TEXT). When the open_item contract (write verb) is built, add five OPTIONAL fields to the open_item contract: `current` / `pending` / `total` / `next` / `last` (omitting the `freeform_` prefix). These are all common-use columns for different types of tasks where you need to track a quantity or key-based position — beats parsing the item body all the time for one value. No additional freeform columns: the candidates considered were derivatives of these five (`done = total − pending`) or outside the quantity/position pattern (dates, priorities — future typed-contract territory).
+**Freeform tracking (for when the open_item contract is built).** `open_items` carries seven NULL-defaulted freeform tracking columns — `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER), `freeform_next` / `freeform_last` (TEXT), and `freeform_due` / `freeform_priority` (TEXT). When the open_item contract (write verb) is built, add seven OPTIONAL fields to the open_item contract: `current` / `pending` / `total` / `next` / `last` / `due` / `priority` (omitting the `freeform_` prefix). The first five are common-use columns for different types of tasks where you need to track a quantity or key-based position — beats parsing the item body all the time for one value; `due` / `priority` sit outside that pattern but are core to an open item's tracking needs (user-directed addition). No further additions planned: the remaining candidates are derivatives of the set (`done = total − pending`) or speculative.
 
 ### Autoexport
 
