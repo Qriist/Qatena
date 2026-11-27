@@ -10,10 +10,11 @@ until stdin EOF; ``serve(vault_dir) -> 0``.
 import json
 import os
 import re
+import sqlite3
 import sys
 
-from . import __version__, db, schema, uuid7
-from .verbs import VerbError, execute
+from . import __version__, autoexport, db, schema, uuid7
+from .verbs import VerbError, _WRITE_DISPATCH, _resolve_endpoint, execute
 
 # The 18 tools, copied from SPEC.md 3.1-3.18 (same JSON, no rewording).
 TOOLS = [
@@ -699,15 +700,43 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. v1 supports create only; any other action fails with unsupported_action. This verb takes no routing key of its own.",
+        "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport and deregister_autoexport are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register. See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
                     "enum": [
-                        "create"
-                    ]
+                        "create",
+                        "register_autoexport",
+                        "deregister_autoexport"
+                    ],
+                    "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport additionally requires 'emit_format'."
+                },
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "For register_autoexport / deregister_autoexport: the vault's routing key (returned by action=create). Not used by create."
+                },
+                "root": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "For register_autoexport / deregister_autoexport: the stack root — a LIVE section, chain, or blade (register); the registered root (deregister). Not used by create."
+                },
+                "emit_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "For register_autoexport / deregister_autoexport: destination file path, used exactly as given; the parent directory must exist. Not used by create."
+                },
+                "emit_format": {
+                    "type": "string",
+                    "enum": [
+                        "md",
+                        "csv",
+                        "json",
+                        "ndjson"
+                    ],
+                    "description": "For register_autoexport only: export format. Re-registering the same root+path with a different format replaces it. Not used by create or deregister."
                 }
             },
             "required": [
@@ -742,47 +771,306 @@ def _tool_error(code, message):
 
 
 def _call_vambrace(vault_dir, arguments):
-    """The vambrace verb itself: vault control, no routing key (SPEC 1.9, 3.18)."""
+    """The vambrace verb itself: vault control (SPEC 1.9, 3.18).
+
+    ``create`` is the only key-less action. ``register_autoexport`` and
+    ``deregister_autoexport`` are KEY-BEARING: they take the vault routing
+    key in ``vambrace`` and are validated fail-closed exactly like a routed
+    verb.
+    """
     action = arguments.get("action")
-    if action != "create":
-        return _tool_error("unsupported_action",
-                           f"unsupported vambrace action {action!r} — v1 supports: create"), True
-    key = uuid7.new_uuid7()
-    conn = db.connect(os.path.join(vault_dir, key + ".db"))
+    if action == "create":
+        key = uuid7.new_uuid7()
+        conn = db.connect(os.path.join(vault_dir, key + ".db"))
+        try:
+            schema.bootstrap(conn)
+        finally:
+            conn.close()
+        return {"vambrace": key}, False
+    if action == "register_autoexport":
+        return _call_register_autoexport(vault_dir, arguments)
+    if action == "deregister_autoexport":
+        return _call_deregister_autoexport(vault_dir, arguments)
+    return _tool_error(
+        "unsupported_action",
+        f"unsupported vambrace action {action!r} — v1 supports: create, "
+        "register_autoexport, deregister_autoexport"), True
+
+
+def _validate_routing_key(key, vault_dir):
+    """Shared fail-closed key check: routed verbs and key-bearing vambrace
+    actions (SPEC 1.9). Returns (vault_path, None) or (None, (payload, True))."""
+    if not isinstance(key, str) or not key:
+        return None, (_tool_error("missing_vambrace",
+                                  "vambrace routing key is required — create a vault with the "
+                                  "vambrace verb (action=create) first"), True)
+    if not _VAMBRACE_KEY_RE.match(key):
+        return None, (_tool_error("malformed_vambrace",
+                                  f"vambrace key must be a UUIDv7 (36-char lowercase, version 7): got {key!r}"), True)
+    path = os.path.join(vault_dir, key + ".db")
+    if not os.path.exists(path):
+        return None, (_tool_error("unknown_vambrace",
+                                  f"unknown vambrace '{key}': no such vault (create one with the vambrace verb)"), True)
+    return path, None
+
+
+# A stack is defined over section -> chain -> blade only (SPEC 3.18).
+_STACKABLE_ROOTS = ("section", "chain", "blade")
+
+
+def _register_tx(conn, now, root, space, emit_path, emit_format):
+    """Upsert the register row and mint its log row, one transaction.
+
+    Identity (root_uuid, emit_path); re-registering with a different format
+    replaces it. Returns (replaced, log_id).
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        existing = conn.execute(
+            "SELECT emit_format FROM autoexport_registers "
+            "WHERE root_uuid = ? AND emit_path = ?",
+            (root, emit_path),
+        ).fetchone()
+        if existing is None:
+            replaced = False
+            conn.execute(
+                "INSERT INTO autoexport_registers (root_uuid, emit_path, emit_format, created) "
+                "VALUES (?, ?, ?, ?)",
+                (root, emit_path, emit_format, now),
+            )
+        else:
+            replaced = existing["emit_format"] != emit_format
+            if replaced:
+                conn.execute(
+                    "UPDATE autoexport_registers SET emit_format = ? "
+                    "WHERE root_uuid = ? AND emit_path = ?",
+                    (emit_format, root, emit_path),
+                )
+        body = json.dumps(
+            {
+                "op": "register_autoexport",
+                "root": root,
+                "root_space": space,
+                "emit_path": emit_path,
+                "emit_format": emit_format,
+                "replaced": replaced,
+            },
+            sort_keys=True, separators=(",", ":"),
+        )
+        cur = conn.execute(
+            "INSERT INTO logs (created, title, area, body) VALUES (?, ?, ?, ?)",
+            (now, f"autoexport register {space} {root} -> {emit_path}", "autoexport", body),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO log_refs (log_id, uuid, op) VALUES (?, ?, ?)",
+            (cur.lastrowid, root, "referenced"),
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    return replaced, cur.lastrowid
+
+
+def _deregister_tx(conn, now, root, emit_path):
+    """Delete the register row and mint its log row, one transaction."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "DELETE FROM autoexport_registers WHERE root_uuid = ? AND emit_path = ?",
+            (root, emit_path),
+        )
+        body = json.dumps(
+            {"op": "deregister_autoexport", "root": root, "emit_path": emit_path},
+            sort_keys=True, separators=(",", ":"),
+        )
+        cur = conn.execute(
+            "INSERT INTO logs (created, title, area, body) VALUES (?, ?, ?, ?)",
+            (now, f"autoexport deregister {root} -> {emit_path}", "autoexport", body),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO log_refs (log_id, uuid, op) VALUES (?, ?, ?)",
+            (cur.lastrowid, root, "referenced"),
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+    return cur.lastrowid
+
+
+def _call_register_autoexport(vault_dir, arguments):
+    """register_autoexport (SPEC 3.18): key-bearing; synchronous first export."""
+    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+    if err is not None:
+        return err
+    root = arguments.get("root")
+    if not isinstance(root, str) or not root:
+        return _tool_error("validation_failed",
+                           "root is required for register_autoexport: the uuid of a live "
+                           "section, chain, or blade"), True
+    emit_path = arguments.get("emit_path")
+    if not isinstance(emit_path, str) or not emit_path:
+        return _tool_error("validation_failed",
+                           "emit_path is required for register_autoexport: a non-empty "
+                           "destination file path"), True
+    parent = os.path.dirname(emit_path)
+    if parent and not os.path.isdir(parent):
+        return _tool_error("validation_failed",
+                           f"emit_path parent directory does not exist: {parent!r}"), True
+    emit_format = arguments.get("emit_format")
+    if emit_format not in autoexport.ALLOWED_FORMATS:
+        return _tool_error("validation_failed",
+                           f"emit_format must be one of {list(autoexport.ALLOWED_FORMATS)}: "
+                           f"got {emit_format!r}"), True
+
+    conn = db.connect(path)
     try:
         schema.bootstrap(conn)
+        res = _resolve_endpoint(conn, root)
+        if res is None:
+            return _tool_error("not_found",
+                               f"root {root} does not resolve to a live tracked entity"), True
+        if res["space"] not in _STACKABLE_ROOTS:
+            return _tool_error("validation_failed",
+                               f"root space {res['space']!r} is not stackable (must be "
+                               "section, chain, or blade)"), True
+        space = res["space"]
+        now = db.now_ns()
+        replaced, log_id = _register_tx(conn, now, root, space, emit_path, emit_format)
+        payload = autoexport.compute_stack(conn, root)
+        # Synchronous first export (SPEC 3.18): registration is a setup call,
+        # not a hot path — the response reports the initial write's outcome.
+        exported, exported_at, export_error = True, None, None
+        try:
+            info = autoexport.export(path, root, emit_path, emit_format)
+            exported_at = info["exported_at"]
+        except Exception as e:  # self-healing: stale sig re-exports on next change
+            exported, export_error = False, f"{type(e).__name__}: {e}"
+        result = {
+            "root": root,
+            "root_space": space,
+            "emit_path": emit_path,
+            "emit_format": emit_format,
+            "stack": {"chains": payload["counts"]["chains"],
+                      "blades": payload["counts"]["blades"]},
+            "exported": exported,
+            "exported_at": exported_at,
+            "replaced": replaced,
+            "log_id": log_id,
+        }
+        if export_error is not None:
+            result["export_error"] = export_error
+        return result, False
+    except sqlite3.Error as e:
+        return _tool_error("db_error", str(e)), True
     finally:
         conn.close()
-    return {"vambrace": key}, False
+
+
+def _call_deregister_autoexport(vault_dir, arguments):
+    """deregister_autoexport (SPEC 3.18): key-bearing; the file stays on disk."""
+    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+    if err is not None:
+        return err
+    root = arguments.get("root")
+    if not isinstance(root, str) or not root:
+        return _tool_error("validation_failed",
+                           "root is required for deregister_autoexport: the registered "
+                           "root uuid"), True
+    emit_path = arguments.get("emit_path")
+    if not isinstance(emit_path, str) or not emit_path:
+        return _tool_error("validation_failed",
+                           "emit_path is required for deregister_autoexport: the path "
+                           "given at registration"), True
+
+    conn = db.connect(path)
+    try:
+        schema.bootstrap(conn)
+        row = conn.execute(
+            "SELECT 1 FROM autoexport_registers WHERE root_uuid = ? AND emit_path = ?",
+            (root, emit_path),
+        ).fetchone()
+        if row is None:
+            return _tool_error("not_found",
+                               f"no autoexport register for root {root} at {emit_path!r}"), True
+        log_id = _deregister_tx(conn, db.now_ns(), root, emit_path)
+        return {"root": root, "emit_path": emit_path, "removed": True, "log_id": log_id}, False
+    except sqlite3.Error as e:
+        return _tool_error("db_error", str(e)), True
+    finally:
+        conn.close()
 
 
 def _call_routed(vault_dir, name, arguments):
     """Route a non-vambrace call to its vault; fail closed, no default (SPEC 1.9)."""
-    key = arguments.get("vambrace")
-    if not isinstance(key, str) or not key:
-        return _tool_error("missing_vambrace",
-                           "vambrace routing key is required — create a vault with the "
-                           "vambrace verb (action=create) first"), True
-    if not _VAMBRACE_KEY_RE.match(key):
-        return _tool_error("malformed_vambrace",
-                           f"vambrace key must be a UUIDv7 (36-char lowercase, version 7): got {key!r}"), True
-    path = os.path.join(vault_dir, key + ".db")
-    if not os.path.exists(path):
-        return _tool_error("unknown_vambrace",
-                           f"unknown vambrace '{key}': no such vault (create one with the vambrace verb)"), True
+    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+    if err is not None:
+        return err
     conn = db.connect(path)
     try:
         schema.bootstrap(conn)  # idempotent: keeps a hand-touched vault file self-healing
         try:
             # the verb layer never sees the routing key
             args = {k: v for k, v in arguments.items() if k != "vambrace"}
-            return execute(conn, name, args), False
+            result = execute(conn, name, args)
         except VerbError as e:
             return _tool_error(e.code, e.message), True
         except Exception as e:  # unexpected: fail closed, never leak internals
             return _tool_error("db_error", f"internal error: {type(e).__name__}"), True
+        if name in _WRITE_DISPATCH:  # writes only; batch = one check for the whole tx
+            _autoexport_check(conn, path)
+        return result, False
     finally:
         conn.close()
+
+
+# Per-register in-flight debounce: at most one exporter child in flight per
+# register. Keys are reaped lazily (poll) so a finished child unblocks the
+# register's next export.
+_EXPORT_INFLIGHT = {}
+
+
+def _autoexport_check(conn, vault_path):
+    """Post-commit hook (SPEC 3.18).
+
+    After a write verb's transaction commits: for each active register,
+    compare the current stack signature against the stored last_sig; on
+    change, export. QATENA_EXPORT_SYNC=1 (test seam) runs the exporter
+    inline — same code path, no spawn. Never raises into the caller: a
+    failure leaves the sig stale and the next changed write re-triggers.
+    """
+    try:
+        regs = conn.execute(
+            "SELECT root_uuid, emit_path, emit_format, last_sig FROM autoexport_registers"
+        ).fetchall()
+    except sqlite3.Error as e:
+        print(f"qatena: autoexport check failed to list registers: {e!r}", file=sys.stderr)
+        return
+    for key in [k for k, p in _EXPORT_INFLIGHT.items() if p.poll() is not None]:
+        del _EXPORT_INFLIGHT[key]
+    for reg in regs:
+        key = (reg["root_uuid"], reg["emit_path"])
+        try:
+            payload = autoexport.compute_stack(conn, reg["root_uuid"])
+            if payload is None:
+                continue  # root died; its register row was cascade-deleted with it
+            sig = autoexport.stack_signature(payload)
+            if sig == reg["last_sig"]:
+                continue
+            if os.environ.get("QATENA_EXPORT_SYNC") == "1":
+                autoexport.export(vault_path, key[0], key[1], reg["emit_format"])
+            elif key not in _EXPORT_INFLIGHT:
+                _EXPORT_INFLIGHT[key] = autoexport.spawn_exporter(
+                    vault_path, key[0], key[1], reg["emit_format"])
+        except Exception as e:  # self-healing on the next changed write
+            print(f"qatena: autoexport failed for register {key}: {e!r}", file=sys.stderr)
 
 
 def _handle(vault_dir, msg):

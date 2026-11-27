@@ -272,6 +272,15 @@ def _run_write(handler, conn, args):
             for opres in ops:
                 if isinstance(opres, dict):
                     opres["log_id"] = log_id
+        # autoexport cascade (SPEC 3.18): a deleted registered root can never
+        # re-trigger — remove its register rows in the same transaction
+        deleted = [u for u, op in tx.refs.items() if op == "deleted"]
+        if deleted:
+            conn.execute(
+                "DELETE FROM autoexport_registers WHERE root_uuid IN ("
+                + ",".join("?" * len(deleted)) + ")",
+                deleted,
+            )
         conn.execute("COMMIT")
         return result
     except sqlite3.Error as e:

@@ -185,8 +185,10 @@ class ServerSmoke(unittest.TestCase):
             for t in tools:
                 props = t["inputSchema"]["properties"]
                 if t["name"] == "vambrace":
-                    # the 18th verb takes no routing key of its own
-                    self.assertNotIn("vambrace", props)
+                    # create is key-less (the key must NOT be required); the two
+                    # key-bearing autoexport actions take it as an optional arg
+                    self.assertEqual(props.get("vambrace", {}).get("type"), "string")
+                    self.assertNotIn("vambrace", t["inputSchema"]["required"])
                     self.assertIn("action", t["inputSchema"]["required"])
                 else:
                     self.assertEqual(props.get("vambrace", {}).get("type"), "string")

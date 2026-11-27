@@ -5,7 +5,8 @@ Resolutions the design left rough are marked **[resolution]** — the set of tho
 
 **Runtime:** Python 3, stdlib `sqlite3`, a single stdio MCP server process (goose extension).
 One database file per vault, created and owned by the server (§1.9, §3.18). The server is the **sole write
-surface**: no other process or tool may open any vault file for writes.
+surface**: no other process or tool may open any vault file for writes — the one sanctioned exception is
+the autoexport exporter child's single small per-export transaction (§3.18).
 
 ## 1. Conventions
 
@@ -48,7 +49,7 @@ Every write transaction mints, in the same transaction:
 
 - **One `logs` row**: `title` = short summary (e.g. `chain_put "The Forge"`),
   `area` = primary space (`chain` | `section` | `blade` | `pointer` | `open_item` |
-  `ruling` | `term` | `mixed`), `body` = canonical JSON describing the change
+  `ruling` | `term` | `mixed` | `autoexport`), `body` = canonical JSON describing the change
   (per-op records: op, target UUID/name, fields changed with old→new where available).
 - **`log_refs` rows**: one per UUID whose row was created / modified / deleted, or that new
   data in the transaction references without changing it:
@@ -242,6 +243,20 @@ CREATE TABLE terms (
   text    TEXT,
   created INTEGER NOT NULL,
   updated INTEGER NOT NULL
+);
+```
+
+### Autoexport
+
+```sql
+CREATE TABLE autoexport_registers (
+  root_uuid    TEXT(36) NOT NULL,
+  emit_path    TEXT     NOT NULL,
+  emit_format  TEXT     NOT NULL,
+  last_sig     TEXT,                -- NULL until first successful export
+  last_emitted INTEGER,             -- Unix ns of last successful export
+  created      INTEGER NOT NULL,
+  PRIMARY KEY (root_uuid, emit_path)
 );
 ```
 
@@ -681,22 +696,86 @@ change. Renames and refiling are just this.
 Create and route vaults. `action: "create"` mints a UUIDv7, instantiates an empty Qatena database
 file named `<UUIDv7>.db` in the vault dir, bootstraps its schema, and returns exactly
 `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vault's routing key, the required `vambrace`
-argument of every other verb. This verb itself takes no routing key. v1 supports `create` only;
-any other action fails with `unsupported_action` (further actions are deliberately deferred, §5.6).
+argument of every other verb. `create` is the only key-less action.
+
+`register_autoexport` and `deregister_autoexport` are **key-bearing** actions: alongside
+`action` they take the vault's routing key as the `vambrace` argument, validated fail-closed
+exactly like a routed verb (§1.9 — `missing_vambrace` / `malformed_vambrace` /
+`unknown_vambrace`), plus the fields below. Any other action fails with `unsupported_action`.
+
+**Autoexport.** A register names a *stack* — root + descendants, over section → chain → blade
+only — and a destination file + format:
+
+- root = **section**: the section + every member chain + every blade of those chains
+- root = **chain**: the chain + its blades (in `blade_order`)
+- root = **blade**: the blade itself (a leaf; its parent chain appears in the `md` output as
+  presentation context only)
+
+Every committed write is followed by one post-commit check (one hook in the server's routed
+write path; `batch` = one check for the whole transaction; read verbs and the register /
+deregister actions themselves are excluded). For each active register the server compares the
+**stack signature** — a stable content-only hash over the ordered stack:
+`(root uuid, root space, root name)` + per chain `(uuid, name, sorted section names,
+[(blade uuid, text)] in pos order)` — against the stored `last_sig`. On change, the exporter
+child (`python -m qatena.autoexport <vault> <root> <path> <format>`) is spawned detached; it
+re-reads committed truth, renders the format, and atomically rewrites the file. Pointers,
+timestamps, logs, and section orientation are excluded, so no-op upserts do not re-export and
+pointer-only changes do not — but a chain refiled into / out of a registered section does
+(membership is content), and the chain's own register re-exports too (its section list is in
+its signature). A blade root's signature is `(uuid, text)` only, so moving a registered blade
+between chains does not re-export it.
+
+`register_autoexport` (key-bearing):
+
+- `root` — must resolve to a LIVE `section` / `chain` / `blade`. Other entity spaces →
+  `validation_failed`; unknown / dissolved UUID → `not_found`.
+- `emit_path` — used exactly as given; non-empty, parent directory must exist
+  (`validation_failed` otherwise).
+- `emit_format` — one of `md` | `csv` | `json` | `ndjson` (`validation_failed` otherwise).
+- Upsert on identity `(root_uuid, emit_path)`: re-registering the same root + path with a
+  different format REPLACES the format (`replaced: true` in the response).
+- **Synchronous first export** at registration (the response reports the initial write):
+  `exported: false` + `export_error` on failure — the register row is kept and the export
+  self-heals on the next changed write.
+- Mints one log row (area `autoexport`). Response:
+  `{root, root_space, emit_path, emit_format, stack: {chains, blades}, exported, exported_at
+  (iso), replaced, log_id}`.
+
+`deregister_autoexport` (key-bearing): deletes the register row for `(root, emit_path)`
+(`not_found` if absent), mints one log row (area `autoexport`), and returns
+`{root, emit_path, removed: true, log_id}`. **The exported file is left on disk** — the server
+never deletes user files.
+
+**Export lifecycle (convention).** Re-exports are sig-gated: the file is rewritten only when
+the stack signature actually changed. Self-healing: any failed export (disk full, path lost,
+crash) leaves `last_sig` stale, so the next changed write re-triggers automatically — no queue,
+no retry bookkeeping. The exporter child is the one sanctioned exception to the sole-write
+surface: it opens the vault **read-only**, then does exactly one small read-write transaction
+(store `last_sig` / `last_emitted`, mint the export log row — area `autoexport`, title
+`autoexport <root-space> <root-uuid> -> <emit_path>`, root ref op `referenced`). Cascade:
+deleting a registered root (`chain_delete` / `blade_delete`) deletes its register rows in the
+same transaction — a dead root can never re-trigger, and UUIDs are never reused.
 
 ```json
 {
   "name": "vambrace",
-  "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. v1 supports create only; any other action fails with unsupported_action. This verb takes no routing key of its own.",
+  "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport and deregister_autoexport are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register. See SPEC 3.18.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "action": { "type": "string", "enum": ["create"] }
+      "action": { "type": "string", "enum": ["create", "register_autoexport", "deregister_autoexport"], "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport additionally requires 'emit_format'." },
+      "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport: the stack root — a LIVE section, chain, or blade (register); the registered root (deregister). Not used by create." },
+      "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport: destination file path, used exactly as given; the parent directory must exist. Not used by create." },
+      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport only: export format. Re-registering the same root+path with a different format replaces it. Not used by create or deregister." }
     },
     "required": ["action"]
   }
 }
 ```
+
+The key-bearing actions' `vambrace` argument is the routing key itself (§1.9); it is described
+in the tool description rather than as a schema property, because `create` takes no key and the
+verb's schema stays key-less.
 
 ## 4. Migration notes (source → Qatena)
 
@@ -717,4 +796,4 @@ any other action fails with `unsupported_action` (further actions are deliberate
 3. **Agent-authored log entries** — a 19th verb, if wanted; v1's `logs` are system-minted only.
 4. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale.
 5. **`SPEC.md` resolutions (a)–(f) pending review** — pointers carry no UUID (§1.7) · `pointer_kinds` register (§2) · sections upserted via `chain_put.sections` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
-6. **`vambrace` actions beyond `create`** — list / destroy / label, etc.; deliberately deferred until the project is close to finalizing.
+6. **`vambrace` actions beyond `create`** — list / destroy / label, etc.; deliberately deferred until the project is close to finalizing. (`register_autoexport` / `deregister_autoexport` are built, §3.18.)

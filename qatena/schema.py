@@ -105,6 +105,15 @@ STATEMENTS = [
   created INTEGER NOT NULL,
   updated INTEGER NOT NULL
 )""",
+    """CREATE TABLE IF NOT EXISTS autoexport_registers (
+  root_uuid    TEXT(36) NOT NULL,
+  emit_path    TEXT     NOT NULL,
+  emit_format  TEXT     NOT NULL,
+  last_sig     TEXT,                -- NULL until first successful export
+  last_emitted INTEGER,             -- Unix ns of last successful export
+  created      INTEGER NOT NULL,
+  PRIMARY KEY (root_uuid, emit_path)
+)""",
 ]
 
 

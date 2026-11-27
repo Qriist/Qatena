@@ -51,6 +51,31 @@ registry to persist and routing survives server restarts. The key rules:
   well-formed key with no file → `unknown_vambrace`. The server never silently creates or
   falls back.
 
+## Autoexport
+
+A register names a **stack** (section → chain → blade, rooted at a live UUID) and a
+destination file + format (md / csv / json / ndjson). After every committed write, one hook
+compares each register's **content-only stack signature** against its stored signature; on
+change a detached exporter child (`python -m qatena.autoexport`) re-reads committed truth and
+atomically rewrites the file — so the file is always the current truth while the tool return
+stays fast: change identification stays in the server process, file writing in the side
+process.
+
+**Why signature-diff** (rather than extending the per-write transaction footprint): the
+footprint would need every write handler to record every structurally-relevant UUID —
+membership changes, blade re-parenting, membership unions in merges — fragile by
+construction. A bounded read of the stack is *provably* correct for "did the stack change, in
+any way" and costs nothing measurable at this scale. Pointers and timestamps are excluded, so
+no-op upserts and pointer-only writes don't re-export; membership changes do (membership is
+content).
+
+The exporter child opens the vault read-only and then does exactly one small read-write
+transaction (store `last_sig`/`last_emitted` + mint the export log row) — the one sanctioned
+exception to the server-as-sole-write-surface rule. A failed export leaves the signature
+stale, so the next changed write re-triggers: self-healing with no queue or retry
+bookkeeping. Exported files are never deleted by the server; deleting a registered root
+cascade-deletes its registers.
+
 ## Data model
 
 ### Core tables
@@ -100,7 +125,10 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 
 **Vault**
 - `vambrace` — `action: "create"` mints a UUIDv7 and instantiates an empty vault; the returned
-  UUIDv7 is the routing key required on every other verb (multi-vault routing, above)
+  UUIDv7 is the routing key required on every other verb (multi-vault routing, above).
+  `action: "register_autoexport"` / `"deregister_autoexport"` are key-bearing vault actions:
+  register a stack (section/chain/blade root) for automatic sig-gated export to a file
+  (Autoexport, above), or remove the register
 
 **Chain writes**
 - `chain_put` — upsert by UUID or name; presence-mask fields (`name`, `sections`, …); fresh UUIDv7 if absent. Renames and refiling are just this.
