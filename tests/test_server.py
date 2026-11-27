@@ -23,6 +23,7 @@ ROUTED_TOOLS = {
     "chain_put", "chain_delete", "chain_split", "chain_merge",
     "blade_insert", "blade_edit", "blade_move", "blade_delete",
     "batch", "reblade_add", "reblade_remove", "open_item",
+    "deflected_write",
     "get", "search", "list", "reblades_of", "follow", "history",
 }
 EXPECTED_TOOLS = ROUTED_TOOLS | {"vambrace"}
@@ -174,10 +175,10 @@ class ServerSmoke(unittest.TestCase):
             self.assertIsNone(self._peek_deadlined(1.0),
                               "notifications/initialized produced a response line")
 
-        with self.subTest("tools/list returns 19 tools; 18 routed tools require vambrace"):
+        with self.subTest("tools/list returns 20 tools; 19 routed tools require vambrace"):
             res = self._request("tools/list")
             tools = res["result"]["tools"]
-            self.assertEqual(len(tools), 19)
+            self.assertEqual(len(tools), 20)
             self.assertEqual({t["name"] for t in tools}, EXPECTED_TOOLS)
             for t in tools:
                 self.assertIn("inputSchema", t)

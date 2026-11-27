@@ -31,7 +31,7 @@ Themed after a chain weapon system in the project that prompted this design. The
 
 ## Interface layer
 
-A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls. Where an entity's operations naturally form a set, they consolidate into **one verb with an `action` parameter** rather than separate verbs — armory control does this today (`vambrace`), and so does the `open_item` write surface (SPEC §3.19).
+A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls. Where an entity's operations naturally form a set, they consolidate into **one verb with an `action` parameter** rather than separate verbs — armory control does this today (`vambrace`), and so do the `open_item` write surface (SPEC §3.19) and the `deflected_write` cache eraser (SPEC §3.20).
 
 ## Multi-vambrace routing
 
@@ -135,7 +135,7 @@ v1 kinds: `name-ref` (mentions by name; the kind auto-linking mints at write tim
 
 Placeholder surface only. A verb-level contract is reserved: field-level change history for any UUID entity (field, old → new, timestamp). The mechanism (audit tables, triggers) is deliberately deferred until there is something to build against; the design may assume write verbs leave an auditable trace. A coarse per-entity trace (which log touched which UUID, with an op code) is available via `logs` + `log_refs`; field-level old→new stays deferred.
 
-## Verb surface (19 tools)
+## Verb surface (20 tools)
 
 **Armory**
 - `vambrace` — `action: "equip"` mints a UUIDv7 and instantiates an empty vambrace; the returned
@@ -172,6 +172,13 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
   `open` on mint only. `action: "delete"`: by id or name; incoming reblades preserved and
   reported. Reads stay on the generic `get` / `list` / `search` verbs.
 
+**Deflected writes**
+- `deflected_write` — the eraser for the failed content-write cache: `action: "clear"` by
+  `id` (one row) or `group_id` (a whole failed batch), exactly one required. Every failed
+  content-write call (verb + canonical args) is parked per-vambrace in `deflected_writes` —
+  read through `list` (space `deflected_write`), auto-cleared in-transaction by an
+  identical successful write. Memory, not an execution queue: `replay` is rejected (SPEC §3.20).
+
 **Reads**
 - `get` — any UUID; chains return composite (header + ordered blades + intention names), others bare
 - `search` — multi-probe union across all entity spaces with context windows
@@ -185,6 +192,7 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 - **Delete policy** — deleting a chain or blade cascade-deletes its *outgoing* reblades and *reports* incoming ones (they may still be meaningful).
 - **Merge retargeting** — `chain_merge` retargets reblades aimed at the dissolved chain's header onto the survivor; the dissolved header's UUID stops resolving.
 - **Auto-link strictness** — exact name match only mints reblades; near-matches are returned as candidates, never linked silently.
+- **Deflected writes are memory, not an execution queue** — a failed content write parks in the per-vambrace `deflected_writes` cache (readable via `list`, erasable via `deflected_write`); an identical successful write auto-clears its rows in-transaction; `replay` is rejected — re-issuing is a deliberate act (SPEC §3.20)
 
 ## Concretization (spec pass, 2026-11-27)
 
@@ -196,7 +204,7 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 
 ## Open items
 
-- Full DDL + MCP tool schemas — implemented in `SPEC.md` (tracked, committed); the spec tracks the built 19-tool surface.
+- Full DDL + MCP tool schemas — implemented in `SPEC.md` (tracked, committed); the spec tracks the built 20-tool surface.
 - UUID storage → `BLOB(16)` (finalizing step).
 - `history` mechanism (field-level audit; contract reserved).
 - Agent-authored log entries (a possible 20th verb) — open.

@@ -122,6 +122,17 @@ STATEMENTS = [
   created          INTEGER NOT NULL,
   PRIMARY KEY (root_uuid, emit_path)
 )""",
+    """CREATE TABLE IF NOT EXISTS deflected_writes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,  -- dense trace like logs; NOT a UUID; never a reblade endpoint
+  created     INTEGER NOT NULL,                   -- Unix ns
+  group_id    TEXT(36),                           -- UUIDv7; shared by the ops of one failed batch; NULL for a single call
+  op          TEXT    NOT NULL,                   -- verb name; for batch rows: the op's name
+  args        TEXT    NOT NULL,                   -- canonical JSON (sort_keys, compact; lists keep order)
+  error       TEXT,                               -- 'code: message'; NULL on batch siblings
+  state       TEXT    NOT NULL CHECK (state IN ('pending', 'cleared')),
+  cleared_at  INTEGER
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_deflected_writes_state ON deflected_writes (state)",
 ]
 
 

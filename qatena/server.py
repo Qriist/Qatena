@@ -14,9 +14,10 @@ import sqlite3
 import sys
 
 from . import __version__, autoexport, db, schema, uuid7
-from .verbs import VerbError, _WRITE_DISPATCH, _resolve_endpoint, execute
+from .verbs import VerbError, _WRITE_DISPATCH, _resolve_endpoint, canon_args, execute
 
-# The 19 tools, copied from SPEC.md 3.1-3.19 (same JSON, no rewording).
+# The 20 tools: 19 from SPEC.md 3.1-3.19 (same JSON, no rewording) + the
+# deflected_write cache eraser (SPEC deflected_writes 6).
 TOOLS = [
     {
         "name": "chain_put",
@@ -603,7 +604,7 @@ TOOLS = [
     },
     {
         "name": "list",
-        "description": "List an entity space with filters. Returns bare records (chains as headers plus intention names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: intention (name), name_prefix; intentions: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); any space: name_prefix where the space has a name/alias field.",
+        "description": "List an entity space with filters. Returns bare records (chains as headers plus intention names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: intention (name), name_prefix; intentions: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); deflected writes: state, since, until (iso); any space: name_prefix where the space has a name/alias field.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -620,7 +621,8 @@ TOOLS = [
                         "open_item",
                         "ruling",
                         "term",
-                        "log"
+                        "log",
+                        "deflected_write"
                     ]
                 },
                 "filter": {
@@ -852,6 +854,40 @@ TOOLS = [
                 }
             },
             "required": [
+                "action"
+            ]
+        }
+    },
+    {
+        "name": "deflected_write",
+        "description": "Manage the deflected-writes cache: failed content writes parked for post-compaction recovery. action=clear erases a row (by id) or a whole deflected batch (by group_id) from the backlog - for abandoned intents or intents satisfied by a variant call. Exactly one of id/group_id is required (both/neither -> validation_failed); idempotent on already-cleared rows; not_found if no row matches. Reads go through the generic list verb (space deflected_write). The cache is MEMORY, not an execution queue - re-issue deflected writes deliberately, against the current state.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "vambrace": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace."
+                },
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "clear"
+                    ]
+                },
+                "id": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Row id of a single deflected write."
+                },
+                "group_id": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
+                    "description": "Group a whole deflected batch."
+                }
+            },
+            "required": [
+                "vambrace",
                 "action"
             ]
         }
@@ -1215,6 +1251,69 @@ def _call_export(armory_dir, arguments):
     }, False
 
 
+def _cache_deflection(path, name, verb_args, code, message, op_index=None):
+    """Park a failed content write in the deflected_writes cache.
+
+    The failed write tx has already rolled back, so the row cannot live inside
+    a dying tx: this is one small separate RW tx on the same file, minting its
+    own log row (area deflected_writes, no log_refs). Observational only —
+    the failed call's response is unchanged. NEVER raises into the caller: a
+    cache failure prints a stderr warning and returns (exact _autoexport_check
+    precedent). Single verb -> one row (group_id NULL); failed batch -> one
+    row per op under one minted UUIDv7 group_id, the error on the failing op's
+    row (op_index) or on EVERY row when op_index is None (tx-level failure).
+    """
+    conn = db.connect(path)
+    try:
+        now = db.now_ns()
+        err = f"{code}: {message}"
+        if name == "batch":
+            ops = verb_args.get("ops")
+            if not isinstance(ops, list) or not ops:
+                ops = []
+            group_id = uuid7.new_uuid7()
+            rows = []
+            for i, op in enumerate(ops):
+                oname = op.get("op") if isinstance(op, dict) else None
+                oargs = op.get("args") if isinstance(op, dict) else None
+                if oargs is None:
+                    oargs = {}
+                row_err = err if (op_index is None or i == op_index) else None
+                rows.append((group_id, oname, canon_args(oargs), row_err))
+            title = f"deflected_write cache: {len(rows)} op(s) failed batch, group {group_id[:13]}"
+        else:
+            rows = [(None, name, canon_args(verb_args), err)]
+            title = f"deflected_write cache: 1 op(s) {name}"
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            inserted = []
+            for gid, op, args_json, row_err in rows:
+                cur = conn.execute(
+                    "INSERT INTO deflected_writes (created, group_id, op, args, error, state) "
+                    "VALUES (?, ?, ?, ?, ?, 'pending')",
+                    (now, gid, op, args_json, row_err),
+                )
+                inserted.append((cur.lastrowid, op, row_err))
+            body = json.dumps(
+                [{"id": i, "op": op, "error": e} for i, op, e in inserted],
+                sort_keys=True, separators=(",", ":"))
+            conn.execute(
+                "INSERT INTO logs (created, title, area, body) VALUES (?, ?, ?, ?)",
+                (now, title, "deflected_writes", body),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+    except Exception as e:
+        print(f"qatena: deflection cache failed: {e!r}", file=sys.stderr)
+    finally:
+        conn.close()
+
+
 def _call_routed(armory_dir, name, arguments):
     """Route a non-vambrace call to its vambrace; fail closed, no default (SPEC 1.9)."""
     path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
@@ -1228,8 +1327,13 @@ def _call_routed(armory_dir, name, arguments):
             args = {k: v for k, v in arguments.items() if k != "vambrace"}
             result = execute(conn, name, args)
         except VerbError as e:
+            if name in _WRITE_DISPATCH and name != "deflected_write":
+                _cache_deflection(path, name, args, e.code, e.message, getattr(e, "op_index", None))
             return _tool_error(e.code, e.message), True
         except Exception as e:  # unexpected: fail closed, never leak internals
+            if name in _WRITE_DISPATCH and name != "deflected_write":
+                _cache_deflection(path, name, args, "db_error",
+                                  f"internal error: {type(e).__name__}", None)
             return _tool_error("db_error", f"internal error: {type(e).__name__}"), True
         if name in _WRITE_DISPATCH:  # writes only; batch = one check for the whole tx
             _autoexport_check(conn, path)

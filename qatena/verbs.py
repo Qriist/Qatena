@@ -1,4 +1,4 @@
-"""The 18-verb surface of SPEC 3, behind one dispatch.
+"""The 19-verb surface of SPEC 3, behind one dispatch.
 
     execute(conn, verb, args) -> dict   (pure JSON-serializable result)
 
@@ -123,6 +123,18 @@ def _bare(row):
             v = ns_to_iso(v)
         rec[k] = v
     return rec
+
+
+def canon_args(args):
+    """Canonical JSON for a write's args (the deflected_writes string rule).
+
+    Object keys sorted (callers, especially LLMs, do not re-emit keys in a
+    stable order), compact separators. Lists keep their order — membership
+    order (e.g. chain_put.intentions) is semantically significant; no list
+    normalization, ever. Used at deflection and at auto-clear matching only,
+    never at any read.
+    """
+    return json.dumps(args, sort_keys=True, separators=(",", ":"))
 
 
 def _pd(src, dst, kind, note, created):
@@ -268,7 +280,7 @@ def _rollback(conn):
         pass
 
 
-def _run_write(handler, conn, args):
+def _run_write(handler, conn, args, name):
     tx = _Tx(now_ns())
     _begin(conn)
     try:
@@ -290,6 +302,29 @@ def _run_write(handler, conn, args):
                 + ",".join("?" * len(deleted)) + ")",
                 deleted,
             )
+        # deflected-writes auto-clear: a later IDENTICAL successful write pays
+        # off the pending rows claiming (op, canonical args). Same tx, before
+        # COMMIT — a rollback undoes the clear (the clear can never outlive its
+        # write). No extra log row: the satisfying write's own log row records it.
+        if name != "deflected_write":  # the cache verb never deflects itself
+            if name == "batch":
+                for op in args.get("ops") or []:
+                    if not isinstance(op, dict):
+                        continue
+                    oargs = op.get("args")
+                    if oargs is None:
+                        oargs = {}
+                    conn.execute(
+                        "UPDATE deflected_writes SET state = 'cleared', cleared_at = ? "
+                        "WHERE state = 'pending' AND op = ? AND args = ?",
+                        (tx.now, op.get("op"), canon_args(oargs)),
+                    )
+            else:
+                conn.execute(
+                    "UPDATE deflected_writes SET state = 'cleared', cleared_at = ? "
+                    "WHERE state = 'pending' AND op = ? AND args = ?",
+                    (tx.now, name, canon_args(args)),
+                )
         conn.execute("COMMIT")
         return result
     except sqlite3.Error as e:
@@ -815,7 +850,9 @@ def _h_batch(conn, args, tx):
         try:
             res, _title, _area = _WRITE_DISPATCH[name](conn, oargs, tx)
         except VerbError as e:
-            raise VerbError(e.code, f"op {i} ({name}): {e.message}") from None
+            wrapped = VerbError(e.code, f"op {i} ({name}): {e.message}")
+            wrapped.op_index = i  # internal: batch failure attribution for the deflection cache
+            raise wrapped from None
         results.append(res)
     return {"ops": results}, f"batch ({len(ops)} ops)", "mixed"
 
@@ -1133,7 +1170,7 @@ def _h_search(conn, args):
     return {"hits": ordered[:limit]}
 
 
-_LIST_SPACES = ("chain", "intention", "open_item", "ruling", "term", "log")
+_LIST_SPACES = ("chain", "intention", "open_item", "ruling", "term", "log", "deflected_write")
 _LIST_APPLICABLE = {
     "chain": {"intention", "name_prefix"},
     "intention": {"orientation", "name_prefix"},
@@ -1141,6 +1178,7 @@ _LIST_APPLICABLE = {
     "ruling": {"state", "name_prefix"},
     "term": {"name_prefix"},
     "log": {"uuid", "since", "until"},
+    "deflected_write": {"state", "since", "until"},
 }
 
 
@@ -1203,6 +1241,20 @@ def _h_list(conn, args):
             params.append(_like_escaped(str(filt["name_prefix"])) + "%")
         sql += " ORDER BY created, id LIMIT ? OFFSET ?"
         items = [_bare(r) for r in conn.execute(sql, (*params, limit, offset))]
+    elif space == "deflected_write":
+        sql = "SELECT * FROM deflected_writes WHERE 1=1"
+        params = []
+        if "state" in filt:
+            sql += " AND state = ?"
+            params.append(filt["state"])
+        if "since" in filt:
+            sql += " AND created >= ?"
+            params.append(_iso_ns(filt["since"], "since"))
+        if "until" in filt:
+            sql += " AND created <= ?"
+            params.append(_iso_ns(filt["until"], "until"))
+        sql += " ORDER BY id LIMIT ? OFFSET ?"
+        items = [_deflected_record(r) for r in conn.execute(sql, (*params, limit, offset))]
     else:  # log
         sql = "SELECT DISTINCT l.* FROM logs l WHERE 1=1"
         params = []
@@ -1349,6 +1401,74 @@ def _h_history(conn, args):
     }
 
 
+# ---------------------------------------------------------- deflected writes
+
+def _deflected_record(row):
+    """A deflected_writes row as a bare record: NULLs omitted, ns rendered
+    ISO-8601 at the surface, args re-parsed from canonical JSON to an object."""
+    rec = {}
+    for k in row.keys():
+        v = row[k]
+        if v is None:
+            continue
+        if k in ("created", "cleared_at"):
+            v = ns_to_iso(v)
+        elif k == "args":
+            try:
+                v = json.loads(v)
+            except (TypeError, ValueError):
+                pass  # leave the raw canonical string (should never happen)
+        rec[k] = v
+    return rec
+
+
+def _h_deflected_write(conn, args, tx):
+    """deflected_write: erase from the deflected-writes cache (20th tool).
+
+    action=clear: exactly one of id (a single row) or group_id (a whole
+    deflected batch). Idempotent on already-cleared rows (the rows are
+    returned, no error); not_found if no row matches at all. The cache is
+    MEMORY, not an execution queue (SPEC deflected_writes 6): re-issue
+    deflected writes deliberately — replay is not a verb, and no target means
+    no implicit bulk wipe.
+    """
+    action = args.get("action")
+    if action != "clear":
+        raise VerbError("validation_failed", f"deflected_write action must be 'clear', got {action!r}")
+    row_id = args.get("id")
+    group_id = args.get("group_id")
+    if row_id is not None and (not isinstance(row_id, int) or isinstance(row_id, bool) or row_id < 1):
+        raise VerbError("validation_failed", "id must be an integer >= 1")
+    if group_id is not None and (not isinstance(group_id, str) or not group_id):
+        raise VerbError("validation_failed", "group_id must be a uuid string")
+    if (row_id is None) == (group_id is None):
+        raise VerbError("validation_failed", "deflected_write clear requires exactly one of id or group_id")
+    if row_id is not None:
+        cond, where = "id = ?", (row_id,)
+        target = f"id {row_id}"
+    else:
+        cond, where = "group_id = ?", (group_id,)
+        target = f"group {group_id}"
+    any_rows = conn.execute(f"SELECT * FROM deflected_writes WHERE {cond}", where).fetchall()
+    if not any_rows:
+        raise VerbError("not_found", f"no deflected write matches {target}")
+    pending = [r for r in any_rows if r["state"] == "pending"]
+    if pending:
+        conn.execute(
+            f"UPDATE deflected_writes SET state = 'cleared', cleared_at = ? "
+            f"WHERE state = 'pending' AND {cond}",
+            (tx.now, *where),
+        )
+        any_rows = conn.execute(f"SELECT * FROM deflected_writes WHERE {cond}", where).fetchall()
+    n = len(any_rows)
+    tx.record({"op": "deflected_write_clear", "count": n, "id": row_id, "group_id": group_id})
+    return (
+        {"cleared": [_deflected_record(r) for r in any_rows], "count": n},
+        f"deflected_write clear {n} row(s)",
+        "deflected_writes",
+    )
+
+
 # ------------------------------------------------------------------ dispatch
 
 _WRITE_DISPATCH = {
@@ -1364,6 +1484,7 @@ _WRITE_DISPATCH = {
     "reblade_remove": _h_reblade_remove,
     "batch": _h_batch,
     "open_item": _h_open_item,
+    "deflected_write": _h_deflected_write,
 }
 
 _READ_HANDLERS = {
@@ -1375,12 +1496,12 @@ _READ_HANDLERS = {
     "history": _h_history,
 }
 
-# 12 write + 6 read = 18 verbs
+# 13 write + 6 read = 19 verbs
 ALL_VERBS = tuple(_WRITE_DISPATCH) + tuple(_READ_HANDLERS)
 
 
 def execute(conn, verb, args):
-    """Dispatch one of the 18 SPEC 3 verbs. Pure JSON-serializable dict, or VerbError."""
+    """Dispatch one of the 19 SPEC 3 verbs. Pure JSON-serializable dict, or VerbError."""
     if not isinstance(args, dict):
         args = {}
     read = _READ_HANDLERS.get(verb)
@@ -1390,5 +1511,5 @@ def execute(conn, verb, args):
         except sqlite3.Error as e:
             raise VerbError("db_error", str(e)) from None
     if verb in _WRITE_DISPATCH:
-        return _run_write(_WRITE_DISPATCH[verb], conn, args)
+        return _run_write(_WRITE_DISPATCH[verb], conn, args, verb)
     raise VerbError("not_found", f"unknown verb: {verb!r}")

@@ -57,7 +57,7 @@ Every write transaction mints, in the same transaction:
   (`referenced` = e.g. the endpoints of a new reblade row.)
 
 The settled verb surface has **no log-write verb**: the timeline is the mechanical trace of the
-system's own footprint. Agent-authored narrative log entries would be a 19th verb — open, not
+system's own footprint. Agent-authored narrative log entries would be a 21st verb — open, not
 part of v1 (see §5).
 
 ### 1.6 Auto-linking
@@ -276,7 +276,26 @@ explicit indexes exist (`idx_csm_intention`, `idx_reblades_dst`, `idx_logs_creat
 `idx_log_refs_uuid`, `idx_blades_chain`); all tables are personal-project scale — no
 speculative indexes. `search` is LIKE-probe based in v1 (FTS5 is a later optimization, §5).
 
-## 3. Verb surface (19 MCP tools)
+### Deflected writes (failed content-write cache)
+
+```sql
+CREATE TABLE IF NOT EXISTS deflected_writes (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,  -- dense trace like logs; NOT a UUID; never a reblade endpoint
+  created     INTEGER NOT NULL,                   -- Unix ns
+  group_id    TEXT(36),                           -- UUIDv7; shared by the ops of one failed batch; NULL for a single call
+  op          TEXT    NOT NULL,                   -- verb name; for batch rows: the op's name
+  args        TEXT    NOT NULL,                   -- canonical JSON (sort_keys, compact; lists keep order)
+  error       TEXT,                               -- 'code: message'; NULL on batch siblings
+  state       TEXT    NOT NULL CHECK (state IN ('pending', 'cleared')),
+  cleared_at  INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_deflected_writes_state ON deflected_writes (state);
+```
+
+Added to `schema.STATEMENTS`, so `schema.bootstrap` (idempotent, runs on every routed
+open) migrates existing vambraces in place — no separate migration code. Behavior: §3.20.
+
+## 3. Verb surface (20 MCP tools)
 
 **Shared field definitions** (used throughout the schemas below):
 
@@ -617,12 +636,12 @@ change. Renames and refiling are just this.
 ```json
 {
   "name": "list",
-  "description": "List an entity space with filters. Returns bare records (chains as headers plus intention names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: intention (name), name_prefix; intentions: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); any space: name_prefix where the space has a name/alias field.",
+  "description": "List an entity space with filters. Returns bare records (chains as headers plus intention names; blade bodies only if include_blades). Filters are space-specific keys, ignored (with a warning in the response) where inapplicable: chains: intention (name), name_prefix; intentions: orientation; open items / rulings: state; logs: uuid (via log_refs), since, until (iso); deflected writes: state, since, until (iso); any space: name_prefix where the space has a name/alias field.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
-      "space": { "type": "string", "enum": ["chain", "intention", "open_item", "ruling", "term", "log"] },
+      "space": { "type": "string", "enum": ["chain", "intention", "open_item", "ruling", "term", "log", "deflected_write"] },
       "filter": {
         "type": "object",
         "properties": {
@@ -902,6 +921,81 @@ check is a no-op for them).
 }
 ```
 
+### 3.20 `deflected_write`
+
+The failed content-write cache. Any tool-level failure of any content-write verb — all
+11 in the write dispatch: `chain_put` … `reblade_remove`, `batch`, `open_item`
+(both actions) — parks the failed call in the vambrace's `deflected_writes` table (§2),
+so a failed write's intent survives to the next session. Never cached: the `vambrace`
+verb (armory management, not content), the read verbs (re-issuable by definition), and
+pre-routing failures (the call never reached a database — inherent to fail-closed routing,
+§1.9).
+
+**Deflection (server layer, observational).** After the failed transaction has rolled
+back, the server opens a small separate RW transaction and: inserts the row(s) — a
+single verb mints one row (`group_id` NULL); a failed `batch` mints **one row per op**
+sharing one minted `group_id` (the rollback loses all of them) — the error text goes on
+the failing op's row, `NULL` on its siblings, and on **every** row for a transaction-level
+failure — and mints one `logs` row in the same transaction (title `deflected_write cache: …`,
+area `deflected_writes`, **no `log_refs`** — no UUID entity is touched). The failed
+call's **response is unchanged** (test-locked — the cache is additive); if the cache
+transaction itself fails, the original error is returned unmodified (stderr warning).
+
+**Canonical args** — the one shared string rule in the design:
+`json.dumps(args, sort_keys=True, separators=(",", ":"))`. Object keys sorted (callers do
+not re-emit keys in stable order); the routing key is stripped; a `batch` op's args default
+to `{}` when absent. **Lists keep their order** — membership order (e.g.
+`chain_put.intentions`) is semantically significant; no list normalization, ever.
+
+**Auto-clear (verb layer, user-authorized).** A later *identical* successful write — same
+verb, same canonical args — flips every matching `pending` row to `cleared` **inside the
+satisfying write's own transaction** (one UPDATE before COMMIT; a `batch` = one UPDATE
+per op, so siblings clear one-at-a-time or together). The row is a claim; an identical
+successful write pays it off. A re-issue with *changed* args (rename, reword, reordered
+list) does not match — the row stays `pending`; that is the gap `clear` exists for. An
+idempotent no-op success (a found `open_item` put, an existing `reblade_add`) also clears —
+the intent is satisfied. Failure again appends a **new** `pending` row (attempts are
+visible); when it finally lands, all matching rows clear at once. No extra log row — the
+satisfying write's own log already records the op.
+
+**Read** — the generic `list` verb, space `deflected_write` (filters `state` / `since` /
+`until`; other keys warned-and-ignored; `search` does **not** probe `args`). Records are
+bare — NULLs omitted, ns rendered ISO, `args` re-parsed from canonical JSON to an object
+— `ORDER BY id`, standard `limit` / `offset`.
+
+**Erase** — this verb, `action: "clear"`, the only v1 action (action-driven, open_item
+pattern — growth slot). **Exactly one of `id` / `group_id`** (both or neither →
+`validation_failed`); no implicit bulk — a clear with no target never wipes the backlog.
+Idempotent on already-cleared rows (returned, no error); nothing matches → `not_found`.
+Flips `pending` → `cleared` + `cleared_at`; one small RW transaction; one log row (area
+`deflected_writes`, no `log_refs`). Response: `{ "cleared": [ …bare rows… ], "count":
+<rows addressed>, "log_id": … }` — `count` is rows addressed, including rows an
+auto-clear already flipped.
+
+**`replay` is REJECTED** (user-directed; a standing invariant, not a deferred item).
+Blind re-drive of stored ops risks semantic mangling: creative work is not financial
+records that reconcile until they land — a half-landed batch is easy to fix *before*,
+essentially impossible *after*. The rows are **memory for the next session, not an
+execution queue**: re-issue deflected writes deliberately (op by op, or as a batch
+re-validated against the current state).
+
+```json
+{
+  "name": "deflected_write",
+  "description": "Manage the deflected-writes cache: failed content writes parked for post-compaction recovery. action=clear erases a row (by id) or a whole deflected batch (by group_id) from the backlog - for abandoned intents or intents satisfied by a variant call. Exactly one of id/group_id is required (both/neither -> validation_failed); idempotent on already-cleared rows; not_found if no row matches. Reads go through the generic list verb (space deflected_write). The cache is MEMORY, not an execution queue - re-issue deflected writes deliberately, against the current state.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
+      "action": { "type": "string", "enum": ["clear"] },
+      "id": { "type": "integer", "minimum": 1, "description": "Row id of a single deflected write." },
+      "group_id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Group a whole deflected batch." }
+    },
+    "required": ["vambrace", "action"]
+  }
+}
+```
+
 ## 4. Migration notes (source → Qatena)
 
 - Migration output lands in a vambrace created by the `vambrace` verb (`action: "equip"`); there is
@@ -918,7 +1012,7 @@ check is a no-op for them).
 
 1. **UUID storage → `BLOB(16)`** — the project's finalizing step (storage-only; tool surface unchanged).
 2. **`history` mechanism** — field-level old→new audit (tables/triggers), contract reserved.
-3. **Agent-authored log entries** — a 19th verb, if wanted; v1's `logs` are system-minted only.
+3. **Agent-authored log entries** — a 21st verb, if wanted; v1's `logs` are system-minted only.
 4. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale.
 5. **`SPEC.md` resolutions (a)–(f) pending review** — reblades carry no UUID (§1.7) · `reblade_kinds` register (§2) · intentions upserted via `chain_put.intentions` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
 6. **`vambrace` actions beyond `equip`** — list / destroy / label, etc.; deliberately deferred until the project is close to finalizing. (`register_autoexport` / `deregister_autoexport` are built, §3.18.)
