@@ -56,14 +56,15 @@ A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a 
 
 | Table | Columns (rough) | Notes |
 |---|---|---|
-| `logs` | ts, title?, area?, body | Append-only timeline; **no UUID**, not a pointer endpoint |
+| `logs` | id (strictly sequential integer), created, title?, area?, body | Append-only timeline; **no UUIDv7** — the sequence must be dense and monotonic, which UUIDs cannot guarantee; not a pointer endpoint |
 | `open_items` | id (UUIDv7), name, state, text, created, updated | state → `open_item_states` |
 | `open_item_states` | name (small seeded register) | e.g. open / shelved / resolved |
 | `rulings` | id (UUIDv7), number (human-facing alias), name, state, body?, created, updated | state → `ruling_states` |
 | `ruling_states` | name (small seeded register) | load-bearing markers (active / retracted / corrected / final) are **state values, not prose** |
 | `terms` | id (UUIDv7), term (name), text?, created, updated | naming register |
+| `log_refs` | log_id, uuid, op | system-minted junction (never prose): write verbs record their transaction's own footprint in the same transaction; op ∈ created / modified / deleted / referenced |
 
-The unified UUID/pointer space dissolves the source system's `ruling_tags` and `open_items.refs` prose-reference columns: those relationships become ordinary pointer rows.
+The unified UUID/pointer space dissolves the source system's `ruling_tags` and `open_items.refs` prose-reference columns: those relationships become ordinary pointer rows. Likewise `log_refs` replaces any free-text "affected items" list: logs are queryable by UUID, and the rows are minted by the system from the transaction's own footprint, so they cannot drift.
 
 ## Pointer semantics
 
@@ -75,7 +76,7 @@ v1 kinds: `name-ref` (mentions by name; the kind auto-linking mints at write tim
 
 ## Revision tracking
 
-Placeholder surface only. A verb-level contract is reserved: field-level change history for any UUID entity (field, old → new, timestamp). The mechanism (audit tables, triggers) is deliberately deferred until there is something to build against; the design may assume write verbs leave an auditable trace.
+Placeholder surface only. A verb-level contract is reserved: field-level change history for any UUID entity (field, old → new, timestamp). The mechanism (audit tables, triggers) is deliberately deferred until there is something to build against; the design may assume write verbs leave an auditable trace. A coarse per-entity trace (which log touched which UUID, with an op code) is available via `logs` + `log_refs`; field-level old→new stays deferred.
 
 ## Verb surface (17 tools)
 
