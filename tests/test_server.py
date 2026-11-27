@@ -33,7 +33,7 @@ class ServerSmoke(unittest.TestCase):
     DEADLINE = 15  # seconds per line / wait
 
     def setUp(self):
-        self._armory = tempfile.mkdtemp(prefix="qatena-armories-")
+        self._armory = tempfile.mkdtemp(prefix="qatena-armory-")
         self._servers = []
         self.proc, self._lines = self._spawn()
         self._next_id = 0

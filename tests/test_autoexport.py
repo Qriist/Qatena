@@ -847,7 +847,7 @@ class AutoexportServerTests(unittest.TestCase):
     DEADLINE = 20
 
     def setUp(self):
-        self._armory = tempfile.mkdtemp(prefix="qatena-ae-armories-")
+        self._armory = tempfile.mkdtemp(prefix="qatena-ae-armory-")
         self._outdir = tempfile.mkdtemp(prefix="qatena-ae-out-")
         self._proc, self._lines = self._spawn()
         self._next_id = 0
