@@ -700,7 +700,7 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport and deregister_autoexport are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register. See SPEC 3.18.",
+        "description": "Vault control. action=create mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the vault dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vault's routing key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vault actions: alongside 'action' they take the vault's routing key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live section/chain/blade stack to emit_path immediately, read-only against the vault (no register row, no log, no stored signature). See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -709,24 +709,25 @@ TOOLS = [
                     "enum": [
                         "create",
                         "register_autoexport",
-                        "deregister_autoexport"
+                        "deregister_autoexport",
+                        "export"
                     ],
-                    "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport additionally requires 'emit_format'."
+                    "description": "create: key-less — mints a new vault. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vault routing key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live section/chain/blade stack to emit_path, read-only against the vault (no register row, no log, no signature); pointer_fidelity selects the pointer layer for this render (default out)."
                 },
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For register_autoexport / deregister_autoexport: the vault's routing key (returned by action=create). Not used by create."
+                    "description": "For register_autoexport / deregister_autoexport / export: the vault's routing key (returned by action=create). Not used by create."
                 },
                 "root": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For register_autoexport / deregister_autoexport: the stack root — a LIVE section, chain, or blade (register); the registered root (deregister). Not used by create."
+                    "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE section, chain, or blade (register / export); the registered root (deregister). Not used by create."
                 },
                 "emit_path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "For register_autoexport / deregister_autoexport: destination file path, used exactly as given; the parent directory must exist. Not used by create."
+                    "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by create."
                 },
                 "emit_format": {
                     "type": "string",
@@ -736,7 +737,7 @@ TOOLS = [
                         "json",
                         "ndjson"
                     ],
-                    "description": "For register_autoexport only: export format. Re-registering the same root+path with a different format replaces it. Not used by create or deregister."
+                    "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by create or deregister."
                 },
                 "pointer_fidelity": {
                     "type": "string",
@@ -746,7 +747,7 @@ TOOLS = [
                         "out",
                         "both"
                     ],
-                    "description": "For register_autoexport only: pointer layer of the export — 'out' rows leaving the stack, 'in' rows entering it, 'both' either, 'none' no pointer markup. Omitted = 'out' at creation; omitted on re-register keeps the stored value (presence-mask). The mode is signed into the stack signature. Not used by create or deregister."
+                    "description": "For register_autoexport and export only: pointer layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by create or deregister."
                 }
             },
             "required": [
@@ -783,10 +784,12 @@ def _tool_error(code, message):
 def _call_vambrace(vault_dir, arguments):
     """The vambrace verb itself: vault control (SPEC 1.9, 3.18).
 
-    ``create`` is the only key-less action. ``register_autoexport`` and
-    ``deregister_autoexport`` are KEY-BEARING: they take the vault routing
-    key in ``vambrace`` and are validated fail-closed exactly like a routed
-    verb.
+    ``create`` is the only key-less action. ``register_autoexport``,
+    ``deregister_autoexport``, and ``export`` are KEY-BEARING: they take the
+    vault routing key in ``vambrace`` and are validated fail-closed exactly
+    like a routed verb. ``export`` is one-shot: it renders and writes a
+    stack file immediately, read-only against the vault (no register row,
+    no log row, no stored signature).
     """
     action = arguments.get("action")
     if action == "create":
@@ -801,10 +804,12 @@ def _call_vambrace(vault_dir, arguments):
         return _call_register_autoexport(vault_dir, arguments)
     if action == "deregister_autoexport":
         return _call_deregister_autoexport(vault_dir, arguments)
+    if action == "export":
+        return _call_export(vault_dir, arguments)
     return _tool_error(
         "unsupported_action",
         f"unsupported vambrace action {action!r} — v1 supports: create, "
-        "register_autoexport, deregister_autoexport"), True
+        "register_autoexport, deregister_autoexport, export"), True
 
 
 def _validate_routing_key(key, vault_dir):
@@ -1031,6 +1036,82 @@ def _call_deregister_autoexport(vault_dir, arguments):
         return _tool_error("db_error", str(e)), True
     finally:
         conn.close()
+
+
+def _call_export(vault_dir, arguments):
+    """export (SPEC 3.18): key-bearing ONE-SHOT.
+
+    Mirrors the register_autoexport validation chain, then renders and
+    writes the stack file immediately. Deliberately read-only against the
+    vault: no register row, no log row, no log_refs, no stored signature --
+    and so no schema.bootstrap on this path (the key check above already
+    guarantees the vault file exists).
+    """
+    path, err = _validate_routing_key(arguments.get("vambrace"), vault_dir)
+    if err is not None:
+        return err
+    root = arguments.get("root")
+    if not isinstance(root, str) or not root:
+        return _tool_error("validation_failed",
+                           "root is required for export: the uuid of a live "
+                           "section, chain, or blade"), True
+    emit_path = arguments.get("emit_path")
+    if not isinstance(emit_path, str) or not emit_path:
+        return _tool_error("validation_failed",
+                           "emit_path is required for export: a non-empty "
+                           "destination file path"), True
+    parent = os.path.dirname(emit_path)
+    if parent and not os.path.isdir(parent):
+        return _tool_error("validation_failed",
+                           f"emit_path parent directory does not exist: {parent!r}"), True
+    emit_format = arguments.get("emit_format")
+    if emit_format not in autoexport.ALLOWED_FORMATS:
+        return _tool_error("validation_failed",
+                           f"emit_format must be one of {list(autoexport.ALLOWED_FORMATS)}: "
+                           f"got {emit_format!r}"), True
+    pointer_fidelity = arguments.get("pointer_fidelity")
+    if pointer_fidelity is not None and pointer_fidelity not in autoexport.POINTER_FIDELITIES:
+        return _tool_error("validation_failed",
+                           "pointer_fidelity must be one of none, in, out, both"), True
+    fidelity = pointer_fidelity if pointer_fidelity is not None else "out"
+
+    conn = autoexport.open_readonly(path)
+    try:
+        res = _resolve_endpoint(conn, root)
+        if res is None:
+            return _tool_error("not_found",
+                               f"root {root} does not resolve to a live tracked entity"), True
+        if res["space"] not in _STACKABLE_ROOTS:
+            return _tool_error("validation_failed",
+                               f"root space {res['space']!r} is not stackable (must be "
+                               "section, chain, or blade)"), True
+        space = res["space"]
+        try:
+            written = autoexport.write_export(
+                conn, root, emit_path, emit_format, fidelity)
+        except sqlite3.Error as e:
+            return _tool_error("db_error", str(e)), True
+        except Exception as e:
+            return _tool_error("export_failed",
+                               f"export write failed: {type(e).__name__}: {e}"), True
+        if written is None:
+            return _tool_error("not_found",
+                               f"root {root} does not resolve to a live tracked entity"), True
+        exported_at, counts = written
+    except sqlite3.Error as e:
+        return _tool_error("db_error", str(e)), True
+    finally:
+        conn.close()
+    return {
+        "root": root,
+        "root_space": space,
+        "emit_path": emit_path,
+        "emit_format": emit_format,
+        "pointer_fidelity": fidelity,
+        "stack": {"chains": counts["chains"], "blades": counts["blades"]},
+        "exported": True,
+        "exported_at": exported_at,
+    }, False
 
 
 def _call_routed(vault_dir, name, arguments):

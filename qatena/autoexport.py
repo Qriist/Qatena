@@ -390,7 +390,7 @@ def render(payload, emit_format, exported_at):
 
 # -------------------------------------------------------------- export flow
 
-def _open_readonly(vault_path):
+def open_readonly(vault_path):
     """Open a vault file read-only (URI mode=ro); the child never writes reads."""
     path = os.path.abspath(vault_path)
     if os.name == "nt":
@@ -403,6 +403,38 @@ def _open_readonly(vault_path):
     return conn
 
 
+def write_export(conn, root_uuid, emit_path, emit_format, fidelity):
+    """Render one export and atomically write it to ``emit_path``.
+
+    The one-shot path (the vambrace ``export`` action): takes an OPEN
+    read-only connection, computes the stack, renders, and writes the file
+    with the same temp + os.replace mechanism as ``export``. No database
+    writes happen here at all -- the vault is never mutated.
+
+    Returns ``(exported_at, counts)`` (counts = the payload's
+    ``{"chains", "blades", "pointers"}`` dict) or ``None`` if the stack does
+    not resolve (root is not a live section / chain / blade).
+    """
+    payload = compute_stack(conn, root_uuid, fidelity)
+    if payload is None:
+        return None
+    now = db.now_ns()
+    exported_at = db.ns_to_iso(now)
+    rendered = render(payload, emit_format, exported_at)
+    tmp = f"{emit_path}.tmp-{secrets.token_hex(8)}"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(rendered)
+        os.replace(tmp, emit_path)  # atomic: a crash never leaves a torn file
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    return exported_at, payload["counts"]
+
+
 def export(vault_path, root_uuid, emit_path, emit_format):
     """Run one full export. Raises on failure — the caller self-heals.
 
@@ -411,7 +443,9 @@ def export(vault_path, root_uuid, emit_path, emit_format):
        return a no-op WITHOUT writing the file or minting a log;
     1. re-read committed state READ-ONLY, compute stack + signature (using
        the register row's pointer_fidelity);
-    2. render to <emit_path>.tmp-<random>, then os.replace (atomic);
+    2. write_export: re-derive the same committed stack, render, and
+       atomically write <emit_path>.tmp-<random> -> os.replace (no DB
+       writes in that step);
     3. one small RW transaction: store last_sig/last_emitted + mint the
        export log row (area "autoexport", root ref op "referenced").
 
@@ -422,7 +456,7 @@ def export(vault_path, root_uuid, emit_path, emit_format):
         raise ValueError(
             f"unknown emit format {emit_format!r} (allowed: {list(ALLOWED_FORMATS)})"
         )
-    ro = _open_readonly(vault_path)
+    ro = open_readonly(vault_path)
     try:
         reg = ro.execute(
             "SELECT pointer_fidelity FROM autoexport_registers "
@@ -435,30 +469,22 @@ def export(vault_path, root_uuid, emit_path, emit_format):
                     "noop": "deregistered"}
         fidelity = reg["pointer_fidelity"]
         payload = compute_stack(ro, root_uuid, fidelity)
+        if payload is None:
+            # root no longer resolves (deleted after the hook fired):
+            # nothing to do; the register row is cascade-deleted with it
+            return {"exported_at": None, "sig": None, "log_id": None,
+                    "noop": "root_gone"}
+        # render + atomic file write (write_export does no DB writes)
+        written = write_export(ro, root_uuid, emit_path, emit_format, fidelity)
     finally:
         ro.close()
-    if payload is None:
-        # root no longer resolves (deleted after the hook fired): nothing to do;
-        # the register row is cascade-deleted with it
+    if written is None:
+        # the root vanished between the stack read and the write: same no-op
         return {"exported_at": None, "sig": None, "log_id": None,
                 "noop": "root_gone"}
-
-    now = db.now_ns()
-    exported_at = db.ns_to_iso(now)
+    exported_at = written[0]
     sig = stack_signature(payload)
-    rendered = render(payload, emit_format, exported_at)
-
-    tmp = f"{emit_path}.tmp-{secrets.token_hex(8)}"
-    try:
-        with open(tmp, "w", encoding="utf-8", newline="") as f:
-            f.write(rendered)
-        os.replace(tmp, emit_path)  # atomic: a crash never leaves a torn file
-    except BaseException:
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-        raise
+    now = db.now_ns()
 
     # exactly one small read-write transaction (SPEC 3.18)
     conn = db.connect(vault_path)

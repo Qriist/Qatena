@@ -945,7 +945,8 @@ class AutoexportServerTests(unittest.TestCase):
         props = t["inputSchema"]["properties"]
         self.assertEqual(
             set(props["action"]["enum"]),
-            {"create", "register_autoexport", "deregister_autoexport"})
+            {"create", "register_autoexport", "deregister_autoexport",
+             "export"})
         self.assertEqual(t["inputSchema"]["required"], ["action"])
         for prop in ("root", "emit_path", "emit_format"):
             self.assertIn(prop, props)
