@@ -12,11 +12,11 @@ one logical operation per call — with every invariant enforced server-side. Ev
 
 ## Repo layout
 
-- `qatena/` — the package: `server.py` (stdio MCP loop + the 18 tool definitions),
+- `qatena/` — the package: `server.py` (stdio MCP loop + the 19 tool definitions),
   `verbs.py` (the 18-verb surface), `schema.py` (DDL + seeded registers), `autolink.py`
   (auto-linking), `db.py` (connection + timestamp helpers), `uuid7.py`, `__main__.py`.
 - `tests/` — stdlib `unittest` suite (no third-party dependencies).
-- `SPEC.md` — the contract: conventions, DDL, the 18 verb schemas, error codes.
+- `SPEC.md` — the contract: conventions, DDL, the 19 tool schemas, error codes.
   `DESIGN.md` — the settled design it implements. `AGENTS.md` — local agent orientation
   (gitignored).
 
@@ -61,7 +61,7 @@ extensions:
 
 ## Write surface
 
-The 18 verbs are the only write surface; raw SQL is deliberately not exposed. The agent
+The 19 verbs are the only write surface; raw SQL is deliberately not exposed. The agent
 gets named, shape-checked operations instead: every write runs in one all-or-nothing
 transaction, the DB path is never advertised in any tool, and invariants (gapless blade
 order, endpoint validation, system logs) are enforced server-side — so a bypassed write

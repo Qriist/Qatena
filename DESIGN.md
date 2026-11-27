@@ -31,11 +31,11 @@ Themed after a chain weapon system in the project that prompted this design. The
 
 ## Interface layer
 
-A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls. Where an entity's operations naturally form a set, they consolidate into **one verb with an `action` parameter** rather than separate verbs — armory control does this today (`vambrace`), and the planned `open_item` write surface will do the same (SPEC §open_items).
+A **stdio MCP server** (goose extension). The tool surface is **verb-level**: a small number of well-shaped, composite, batch-capable operations — one logical operation is one call, not raw data access. Rationale: LLM round-trips dominate cost; tool count has recurring context cost (goose performs best under ~25 enabled tools); a resident server keeps DB state warm across calls. Where an entity's operations naturally form a set, they consolidate into **one verb with an `action` parameter** rather than separate verbs — armory control does this today (`vambrace`), and so does the `open_item` write surface (SPEC §3.19).
 
 ## Multi-vambrace routing
 
-One server process, many vambraces: each project gets its own Qatena database file. The 18th verb,
+One server process, many vambraces: each project gets its own Qatena database file. The armory verb,
 `vambrace` (`action: "equip"`), mints a UUIDv7, instantiates `<key>.db` in the armory dir
 (env `QATENA_ARMORY`, default `./.qatena`), bootstraps its schema, and returns that UUIDv7 as the
 vambrace's **key** — every other verb call carries that key in a required `vambrace`
@@ -135,7 +135,7 @@ v1 kinds: `name-ref` (mentions by name; the kind auto-linking mints at write tim
 
 Placeholder surface only. A verb-level contract is reserved: field-level change history for any UUID entity (field, old → new, timestamp). The mechanism (audit tables, triggers) is deliberately deferred until there is something to build against; the design may assume write verbs leave an auditable trace. A coarse per-entity trace (which log touched which UUID, with an op code) is available via `logs` + `log_refs`; field-level old→new stays deferred.
 
-## Verb surface (18 tools)
+## Verb surface (19 tools)
 
 **Armory**
 - `vambrace` — `action: "equip"` mints a UUIDv7 and instantiates an empty vambrace; the returned
@@ -164,6 +164,14 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 - `reblade_add` — explicit src/dst UUID + `kind` + optional note
 - `reblade_remove`
 
+**Open items**
+- `open_item` — the single `action`-driven verb for the open_item space. `action: "put"`:
+  presence-masked create-or-update; `id` takes precedence over `name` (id + different name =
+  rename; id-addressed puts never mint — a nameless put with an unresolvable id is `not_found`);
+  name-addressed responses always carry the `created` marker; `state` is a field, defaulting to
+  `open` on mint only. `action: "delete"`: by id or name; incoming reblades preserved and
+  reported. Reads stay on the generic `get` / `list` / `search` verbs.
+
 **Reads**
 - `get` — any UUID; chains return composite (header + ordered blades + intention names), others bare
 - `search` — multi-probe union across all entity spaces with context windows
@@ -188,7 +196,7 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 
 ## Open items
 
-- Full DDL + MCP tool schemas — drafted in `SPEC.md` (tracked, uncommitted), pending review.
+- Full DDL + MCP tool schemas — implemented in `SPEC.md` (tracked, committed); the spec tracks the built 19-tool surface.
 - UUID storage → `BLOB(16)` (finalizing step).
 - `history` mechanism (field-level audit; contract reserved).
-- Agent-authored log entries (a possible 19th verb) — open.
+- Agent-authored log entries (a possible 20th verb) — open.

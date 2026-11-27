@@ -290,7 +290,7 @@ speculative indexes. `search` is LIKE-probe based in v1 (FTS5 is a later optimiz
 
 **Addressing.** Where a tool takes an entity address, `id` (uuid) takes precedence over `name`;
 at least one must be supplied. If both are supplied, the name must equal the resolved entity's
-current name — except `chain_put`, where `id` + a different name **is the rename** (per §3.1).
+current name — except `chain_put` and `open_item` (`action` `put`), where `id` + a different name **is the rename** (per §3.1, §3.19).
 A name-only call whose case-variant already exists resolves to that chain (NOCASE alias):
 an idempotent upsert, not an error.
 
