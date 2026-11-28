@@ -236,20 +236,27 @@ Settled, built this pass: every content write mints **revision rows** (field, ol
 ## Verb surface (20 tools)
 
 **Armory**
-- `vambrace` — the armory verb (multi-vambrace routing, above) hosts **10 actions** (enum
-  order): `equip` (key-less; mint + optional `saga`) · `inventory` (key-less; both
-  populations) · `saga` (key-bearing; live or waylaid; presence-masked `label`) · `acquire`
-  (key-less; import a mythos snapshot as a NEW vambrace; the one action minting a db log row
-  — its genesis row) · `register_autoexport` / `deregister_autoexport` (key-bearing;
-  autoexport registers, above) · `furnish` (key-bearing; one-shot: a live root's stack, or
-  root `mythos` = whole-vambrace snapshot; read-only, no register row, no log, no stored
-  signature) · `waylay` (key-bearing; live keys only; inline mythos snapshot, verified
-  non-empty, then the db moves to the waylay dir) · `recover` (key-bearing; waylaid keys
-  only; move back; the dismantle count resets) · `dismantle` (key-bearing; waylaid keys
-  only; requests 1-2 warn, request 3 destroys). The file location IS the lifecycle state
-  (live at the armory top / waylaid / gone); armory-level actions mint no db log rows (the
-  armory ledger, `armory.json`, + the responses are their record) — `acquire`'s genesis row
-  is the one exception.
+
+The armory verb `vambrace` (multi-vambrace routing, above) hosts **10 actions** (enum order):
+
+| action | key? | what it does |
+| --- | --- | --- |
+| `equip` | — | mint + optional `saga` |
+| `inventory` | — | reports all existing vambraces, including waylaid |
+| `saga` | live or waylaid | the human-addressable name |
+| `acquire` | — | import a mythos snapshot as a NEW vambrace; the one action minting a db log row (its genesis row) |
+| `register_autoexport` | live | register a live stack root for autoexport; kept current by every signature-changing write |
+| `deregister_autoexport` | live | remove a registered autoexport; the exported file is left on disk |
+| `furnish` | live | one-shot: a live root's stack, or root `mythos` = whole-vambrace snapshot; read-only |
+| `waylay` | live | stages an active vambrace for dismantling; **requires** an inline `mythos` snapshot before the move happens |
+| `recover` | waylaid | moves a waylaid vambrace back into active use; resets the `dismantle` countdown |
+| `dismantle` | waylaid | requests 1-2 warn, request 3 destroys |
+
+- Armory-level invariants: the file location IS the lifecycle state (live at the armory top /
+  waylaid / gone). Actions mint no db log rows (the armory ledger, `armory.json`, + the
+  responses are their record) — `acquire`'s genesis row is the one exception — and `equip` /
+  `acquire` each seed the sidecar's one genesis row (the `history` birth frame; pre-build
+  vambraces carry none)
 
 **Chain writes**
 - `chain_put` — upsert by UUID or name; presence-mask fields (`name`, `intentions`, …); fresh UUIDv7 if absent. Renames and refiling are just this.
