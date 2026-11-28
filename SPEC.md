@@ -1171,7 +1171,11 @@ The write surface for the `open_item` space — the human-driven space where the
 caretaker. A single `action`-driven verb (as `vambrace` is): actions `put` | `delete`; any
 other action fails `validation_failed`.
 
-| rule | settled behavior |
+As open_item is human-driven there are certain special behaviors designed to
+accommodate a human presence, as well as some mitigations against unintended
+agent interpretation. The table below explains this verb’s divergent behaviors.
+
+| rule | behavior |
 |---|---|
 | minimal call | `vambrace` + `action` + `id` on an existing item (routing key, operation, target); on a **mint** `name` takes `id`’s place — the name is the creation key, `id` is minted |
 | repeated name | idempotent: returns the full existing row — all non-null fields (NULLs omitted, not zero-filled; a sparse row comes back sparse) — no clobber, no error |
