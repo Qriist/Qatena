@@ -237,20 +237,20 @@ Settled, built this pass: every content write mints **revision rows** (field, ol
 
 **Armory**
 
-The armory verb `vambrace` (multi-vambrace routing, above) hosts **10 actions** (enum order):
+The armory verb `vambrace` (multi-vambrace routing, above) hosts **10 actions**:
 
 | action | key? | what it does |
 | --- | --- | --- |
 | `equip` | — | mint + optional `saga` |
-| `inventory` | — | reports all existing vambraces, including waylaid |
+| `acquire` | — | import a mythos snapshot as a NEW vambrace |
 | `saga` | live or waylaid | the human-addressable name |
-| `acquire` | — | import a mythos snapshot as a NEW vambrace; the one action minting a db log row (its genesis row) |
-| `register_autoexport` | live | register a live stack root for autoexport; kept current by every signature-changing write |
-| `deregister_autoexport` | live | remove a registered autoexport; the exported file is left on disk |
+| `inventory` | — | reports all existing vambraces, including waylaid |
 | `furnish` | live | one-shot: a live root's stack, or root `mythos` = whole-vambrace snapshot; read-only |
 | `waylay` | live | stages an active vambrace for dismantling; **requires** an inline `mythos` snapshot before the move happens |
 | `recover` | waylaid | moves a waylaid vambrace back into active use; resets the `dismantle` countdown |
 | `dismantle` | waylaid | requests 1-2 warn, request 3 destroys |
+| `register_autoexport` | live | register a live stack root for autoexport; kept current by every signature-changing write |
+| `deregister_autoexport` | live | remove a registered autoexport; the exported file is left on disk |
 
 - Armory-level invariants: the file location IS the lifecycle state (live at the armory top /
   waylaid / gone). Actions mint no db log rows (the armory ledger, `armory.json`, + the
