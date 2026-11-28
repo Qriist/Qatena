@@ -1171,7 +1171,7 @@ The write surface for the `open_item` space — the human-driven space where the
 caretaker. A single `action`-driven verb (as `vambrace` is): actions `put` | `delete`; any
 other action fails `validation_failed`.
 
-The seven freeform fields are defined in �2 (Non-core, `open_items`); on the verb they arrive as OPTIONAL fields with the `freeform_` prefix dropped.
+The seven freeform fields are defined in §2 (Non-core, `open_items`); on the verb they arrive as OPTIONAL fields with the `freeform_` prefix dropped.
 
 | rule | settled behavior |
 |---|---|
