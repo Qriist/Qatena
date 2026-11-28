@@ -16,6 +16,9 @@ Build **durable, itemizable, addressable, and malleable** note storage:
 | Term | Meaning |
 |---|---|
 | **vambrace** | the per-project routing key: the UUIDv7 minted by the `vambrace` verb (action: equip), naming the project's database file `<key>.db` in the armory dir - every routed call is addressed by it |
+| **saga** | the human-facing name of a vambrace; stored in the database itself (the meta `saga` row) — the source of truth, travels with the file; mirrored in the armory ledger as a display cache; conflict-checked case-insensitively across live + waylaid |
+| **mythos** | a whole-vambrace snapshot: all eight entity spaces + meta (saga when set), in the furnish/acquire codec (md/csv/json/ndjson); the special `furnish` root and the only shape `acquire` imports; deliberately excludes deflected_writes (memory, not truth) and autoexport_registers (machine-local config) |
+| **waylaid** | a vambrace suspended in the server-controlled `<armory>/waylay/` dir: not routable by routed verbs, exports inert; the file location IS the lifecycle state — live (armory top) / waylaid / gone (dismantle request 3) |
 | **intention** | a category; the view layer of the note space. Many-to-many: a chain can belong to **any number of intentions** (including zero), and an intention can contain any number of chains - overlapping is the design. Membership is chain-only |
 | **chain** | the unit of note (the source system's "pin") — a header plus ordered blades plus intention membership |
 | **blade** | an individually addressable unit of a chain's body (the source system's "bullet") |
@@ -40,10 +43,15 @@ One server process, many vambraces: each project gets its own Qatena database fi
 `vambrace` (`action: "equip"`), mints a UUIDv7, instantiates `<key>.db` in the armory dir
 (env `QATENA_ARMORY`, default `./.qatena`), bootstraps its schema, and returns that UUIDv7 as the
 vambrace's **key** — every other verb call carries that key in a required `vambrace`
-argument, and the server routes the call to the right file.
+argument, and the server routes the call to the right file. `action: "acquire"` is the
+second creation path: it imports a mythos snapshot (a whole-vambrace snapshot file) as a NEW
+vambrace — the minted key is the armory's; the file's carried key is provenance.
 
 Routing state is the files themselves — an existence check in the armory dir — so there is no
-registry to persist and routing survives server restarts. The key rules:
+registry to persist and routing survives server restarts. There are two locations, and the
+location IS the state: the armory top level (LIVE, routable) and the `<armory>/waylay/` subdir
+(WAYLAID: suspended — not routable by routed verbs, exports inert), managed by `waylay` /
+`recover` / `dismantle`; no state column anywhere. The key rules:
 
 - **Strict vambrace-or-nothing** — every call is routed by an explicit key.
 - **No default vambrace, ever** — a default would let an un-oriented agent land in the wrong
@@ -62,9 +70,11 @@ atomically rewrites the file — so the file is always the current truth while t
 stays fast: change identification stays in the server process, file writing in the side
 process.
 
-**One-shot export.** The `export` vambrace action renders a stack to a file immediately
+**One-shot furnish.** The `furnish` vambrace action renders a stack to a file immediately
 without any register machinery: read-only against the vambrace, no register row, no log, no
-stored signature (SPEC 3.18) — same render, same reblade layer, no bookkeeping.
+stored signature (SPEC 3.18) — same render, same reblade layer, no bookkeeping. The root may
+also be the literal `mythos` — the whole-vambrace snapshot (all eight spaces + meta), the
+codec `acquire` imports.
 
 **Why signature-diff** (rather than extending the per-write transaction footprint): the
 footprint would need every write handler to record every structurally-relevant UUID —
@@ -139,14 +149,20 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 ## Verb surface (20 tools)
 
 **Armory**
-- `vambrace` — `action: "equip"` mints a UUIDv7 and instantiates an empty vambrace; the returned
-  UUIDv7 is its key, required on every other verb (multi-vambrace routing, above).
-  `action: "register_autoexport"` / `"deregister_autoexport"` / `"export"` are key-bearing
-  vambrace actions: register a stack (intention/chain/blade root) for automatic sig-gated export
-  to a file (Autoexport, above; optional `reblade_fidelity` selects the reblade layer
-  carried, default `out`), remove the register, or run a one-shot `export` — immediate
-  file write, read-only against the vambrace (no register row, no log, no stored signature;
-  Autoexport, above)
+- `vambrace` — the armory verb (multi-vambrace routing, above) hosts **10 actions** (enum
+  order): `equip` (key-less; mint + optional `saga`) · `inventory` (key-less; both
+  populations) · `saga` (key-bearing; live or waylaid; presence-masked `label`) · `acquire`
+  (key-less; import a mythos snapshot as a NEW vambrace; the one action minting a db log row
+  — its genesis row) · `register_autoexport` / `deregister_autoexport` (key-bearing;
+  autoexport registers, above) · `furnish` (key-bearing; one-shot: a live root's stack, or
+  root `mythos` = whole-vambrace snapshot; read-only, no register row, no log, no stored
+  signature) · `waylay` (key-bearing; live keys only; inline mythos snapshot, verified
+  non-empty, then the db moves to the waylay dir) · `recover` (key-bearing; waylaid keys
+  only; move back; the dismantle count resets) · `dismantle` (key-bearing; waylaid keys
+  only; requests 1-2 warn, request 3 destroys). The file location IS the lifecycle state
+  (live at the armory top / waylaid / gone); armory-level actions mint no db log rows (the
+  armory ledger, `armory.json`, + the responses are their record) — `acquire`'s genesis row
+  is the one exception.
 
 **Chain writes**
 - `chain_put` — upsert by UUID or name; presence-mask fields (`name`, `intentions`, …); fresh UUIDv7 if absent. Renames and refiling are just this.
@@ -206,6 +222,5 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 ## Open items
 
 - `history` mechanism (field-level audit; contract reserved).
-- Deferred `vambrace` actions: `list` / `destroy` / `label` (`equip` is the only action today; `destroy` would make armory cleanup first-class).
 - UUID storage → `BLOB(16)` (finalizing step).
 - Agent-authored log entries (a 21st-verb candidate now — the 20th went to `deflected_write` in `bcdc70c`) — open.

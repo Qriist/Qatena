@@ -12,13 +12,20 @@ references. It is a set of SQLite databases (one **vambrace** per project) behin
 stdio MCP server that exposes a small, composite, batch-capable verb surface —
 one logical operation per call — with every invariant enforced server-side. Every
 call is routed by a **vambrace** key (a vambrace's UUIDv7 identity) to its project's
-vambrace; vambraces are created with the `vambrace` verb.
+vambrace; vambraces are created with the `vambrace` verb. The `vambrace` verb also runs the
+vambrace lifecycle — `inventory` (both populations), `saga` (the human-facing name),
+`furnish` (one-shot export; the `mythos` root snapshots the whole vambrace), `acquire`
+(import a snapshot as a new vambrace), and `waylay` / `recover` / `dismantle` (suspend in the
+server-controlled waylay dir; a three-step destroy) — the file location is the state.
 
 ## Repo layout
 
 - `qatena/` — the package: `server.py` (stdio MCP loop + the 20 tool definitions),
-  `verbs.py` (the 18-verb surface), `schema.py` (DDL + seeded registers), `autolink.py`
-  (auto-linking), `db.py` (connection + timestamp helpers), `uuid7.py`, `__main__.py`.
+  `verbs.py` (the 19 routed verbs), `schema.py` (DDL + seeded registers), `autolink.py`
+  (auto-linking), `db.py` (connection + timestamp helpers), `armory.py` (the armory
+  ledger, inventory, and saga management), `snapshot.py` (the mythos whole-vambrace
+  snapshot codec), `autoexport.py` (register rendering + the exporter child), `uuid7.py`,
+  `__main__.py`.
 - `tests/` — stdlib `unittest` suite (no third-party dependencies).
 - `SPEC.md` — the contract: conventions, DDL, the 20 tool schemas, error codes.
   `DESIGN.md` — the settled design it implements. `AGENTS.md` — local agent orientation
