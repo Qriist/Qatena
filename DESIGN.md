@@ -214,12 +214,14 @@ never reused.
 | `open_item_states` | name (small seeded register) | e.g. open / shelved / resolved |
 | `rulings` | id (UUIDv7), number (human-facing alias), name, state, body?, created, updated | state → `ruling_states` |
 | `ruling_states` | name (small seeded register) | load-bearing markers (active / retracted / corrected / final) are **state values, not prose** |
-| `terms` | id (UUIDv7), term (name), text?, created, updated | naming register |
+| `terms` | id (UUIDv7), term (name), text?, created, updated | naming register (PARKED — SPEC 5 item 4) |
 | `log_refs` | log_id, uuid, op | system-minted junction (never prose): write verbs record their transaction's own footprint in the same transaction; op ∈ created / modified / deleted / referenced |
 
 The unified UUID/reblade space dissolves the source system's `ruling_tags` and `open_items.refs` prose-reference columns: those relationships become ordinary reblade rows. Likewise `log_refs` replaces any free-text "affected items" list: logs are queryable by UUID, and the rows are minted by the system from the transaction's own footprint, so they cannot drift.
 
 `open_items` carries seven NULL-defaulted freeform tracking columns — `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER) and `freeform_next` / `freeform_last` / `freeform_due` / `freeform_priority` (TEXT) — for quantity / key-position / due / priority tracking. The future open_item contract exposes them as seven OPTIONAL fields without the `freeform_` prefix (see SPEC open_items note).
+
+**The terms entity is PARKED (SPEC 5 item 4).** Provenance: agent-inherited from the reference's `terms` table (a 71-row sectioned glossary), never ratified — no recorded decision. The user's rationale for concepts-as-chains: this is not a dictionary — every concept is a messy multi-fact closure, and the agent needs the full closure or it invents from statistically likely priors. A chain carries that shape (facet per blade, relations as reblades, `follow` is the closure traversal, name-ref autolink targets the chain by name); a term record can only hold an undifferentiated blob. Disposition (drop / demote to import-shape / keep; a term write verb) waits for hands-on use of the system.
 
 ## Reblade semantics
 

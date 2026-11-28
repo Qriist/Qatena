@@ -275,6 +275,8 @@ CREATE TABLE terms (
 );
 ```
 
+*Terms are PARKED (5 item 4): agent-inherited from the reference, never ratified; concepts are chains, not dictionary rows — disposition waits for hands-on use.*
+
 **Freeform tracking.** `open_items` carries seven NULL-defaulted
 freeform tracking columns, exposed by the verb surface as seven OPTIONAL fields with the
 `freeform_` prefix dropped. The item body (`text`) is likewise OPTIONAL — an open item may be
@@ -1325,3 +1327,4 @@ re-validated against the current state).
 1. **UUID storage → `BLOB(16)`** — the project's finalizing step (storage-only; tool surface unchanged).
 2. **Agent-authored entries** — pattern resolved (decisions-as-blades under a designated intention — not a verb, not a `vambrace` action); open: the possibility of seeding the intention space with a few useful agent-specific entries (e.g. a designated agent-notes intention). v1's `logs` are system-minted only.
 3. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale; if built, as a vambrace toggle (index tables in each `<key>.db`, maintained by the write verbs).
+4. **`terms` entity disposition** — PARKED: the space is built and inert (agent-inherited from the reference, never ratified); the user's concepts are chains, not dictionary rows — a concept is a messy multi-fact closure the agent needs whole, or it invents from statistically likely priors; disposition (drop / demote to import-shape / keep) and any term write verb wait for hands-on use of the system.
