@@ -44,11 +44,12 @@ STATEMENTS = [
   PRIMARY KEY (chain_id, pos),
   UNIQUE (chain_id, blade_id)
 )""",
-    """CREATE TABLE IF NOT EXISTS reblade_kinds (                        -- seeded register, extensible **[resolution b]**
+    """CREATE TABLE IF NOT EXISTS reblade_kinds (                        -- seeded register, extensible
   kind TEXT NOT NULL PRIMARY KEY
 )""",
     """INSERT OR IGNORE INTO reblade_kinds (kind) VALUES
-  ('name-ref'), ('supersedes'), ('part-of'), ('source'), ('see')""",
+  ('name-ref'), ('supersedes'), ('part-of'), ('source'), ('see'),
+  ('conflict'), ('depends-on')""",
     """CREATE TABLE IF NOT EXISTS reblades (
   src_uuid TEXT(36) NOT NULL,   -- endpoint, validated server-side (polymorphic)
   dst_uuid TEXT(36) NOT NULL,

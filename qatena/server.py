@@ -373,7 +373,9 @@ TOOLS = [
                         "supersedes",
                         "part-of",
                         "source",
-                        "see"
+                        "see",
+                        "conflict",
+                        "depends-on"
                     ]
                 },
                 "note": {
@@ -414,7 +416,9 @@ TOOLS = [
                         "supersedes",
                         "part-of",
                         "source",
-                        "see"
+                        "see",
+                        "conflict",
+                        "depends-on"
                     ]
                 }
             },
@@ -752,7 +756,9 @@ TOOLS = [
                         "supersedes",
                         "part-of",
                         "source",
-                        "see"
+                        "see",
+                        "conflict",
+                        "depends-on"
                     ]
                 },
                 "count": {
@@ -809,7 +815,9 @@ TOOLS = [
                             "supersedes",
                             "part-of",
                             "source",
-                            "see"
+                            "see",
+                            "conflict",
+                            "depends-on"
                         ]
                     },
                     "description": "Restrict traversal to these kinds; omitted = any kind."

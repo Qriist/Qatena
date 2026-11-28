@@ -25,7 +25,7 @@ class Bootstrap(QatenaTestCase):
 class SeededRegisters(QatenaTestCase):
     def test_reblade_kinds_exact(self):
         got = {r["kind"] for r in self.conn.execute("SELECT kind FROM reblade_kinds")}
-        self.assertEqual(got, {"name-ref", "supersedes", "part-of", "source", "see"})
+        self.assertEqual(got, {"name-ref", "supersedes", "part-of", "source", "see", "conflict", "depends-on"})
 
     def test_open_item_states_exact(self):
         got = {r["name"] for r in self.conn.execute("SELECT name FROM open_item_states")}

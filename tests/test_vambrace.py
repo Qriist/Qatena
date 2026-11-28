@@ -16,7 +16,7 @@ from qatena.verbs import execute
 
 # SPEC 1.9 key format: 36-char lowercase hyphenated, version nibble 7.
 KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$")
-REBLADE_KINDS_V1 = {"name-ref", "supersedes", "part-of", "source", "see"}
+REBLADE_KINDS = {"name-ref", "supersedes", "part-of", "source", "see", "conflict", "depends-on"}
 VAMBRACE_TABLES = {
     "chain_headers", "chain_intentions", "chain_intention_map", "chain_blades",
     "blade_order", "reblades", "reblade_kinds", "logs", "log_refs",
@@ -78,7 +78,7 @@ class Equip(VambraceTestCase):
             self.assertTrue(VAMBRACE_TABLES.issubset(tables),
                             "missing vambrace tables: %s" % (VAMBRACE_TABLES - tables))
             kinds = {r["kind"] for r in conn.execute("SELECT kind FROM reblade_kinds")}
-            self.assertEqual(kinds, REBLADE_KINDS_V1)
+            self.assertEqual(kinds, REBLADE_KINDS)
         finally:
             conn.close()
 

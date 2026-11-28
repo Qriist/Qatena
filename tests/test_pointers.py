@@ -52,6 +52,18 @@ class Add(QatenaTestCase):
         self.expect_error("validation_failed", "reblade_add",
                           src=cid, dst=tid, kind="loves")
 
+    def test_add_conflict_and_depends_on_kinds(self):
+        # SPEC 5 item 4, built 2026-11-28: the two context markers for the
+        # agent driving the system; the register rows make the server-side
+        # validation follow without a code change
+        cid, bid, tid = entities(self)
+        res = self.verb("reblade_add", src=bid, dst=cid, kind="conflict")
+        self.assertEqual((res["reblade"]["src"], res["reblade"]["dst"],
+                          res["reblade"]["kind"]), (bid, cid, "conflict"))
+        self.verb("reblade_add", src=bid, dst=cid, kind="depends-on")
+        self.assertEqual(self.pkeys(),
+                         {(bid, cid, "conflict"), (bid, cid, "depends-on")})
+
     def test_add_missing_endpoint_validation_failed(self):
         cid, bid, tid = entities(self)
         self.expect_error("validation_failed", "reblade_add", src=cid, kind="see")
