@@ -274,7 +274,18 @@ CREATE TABLE terms (
 );
 ```
 
-**Freeform tracking.** Seven NULL-defaulted freeform tracking columns (three INTEGER quantity, four TEXT) plus an optional body — a pure tracking row (name + state + freeform, no body) is valid. The write surface’s full contract — the seven fields, addressing, the `created` marker, the hard guard, batch exclusion — is settled in §3.19.
+**Freeform tracking.** `open_items` carries seven NULL-defaulted
+freeform tracking columns, exposed by the verb surface as seven OPTIONAL fields with the
+`freeform_` prefix dropped. The item body (`text`) is likewise OPTIONAL — an open item may be
+a pure tracking row (name + state + freeform fields, no body).
+
+| field | type | kind |
+|---|---|---|
+| `current` / `pending` / `total` | INTEGER | quantity |
+| `next` / `last` | TEXT | key position |
+| `due` / `priority` | TEXT | label |
+
+The write surface’s full contract — addressing, the `created` marker, the hard guard, batch exclusion — is settled in §3.19.
 
 ### Autoexport
 
@@ -1160,19 +1171,7 @@ The write surface for the `open_item` space — the human-driven space where the
 caretaker. A single `action`-driven verb (as `vambrace` is): actions `put` | `delete`; any
 other action fails `validation_failed`.
 
-**Freeform tracking (open_item contract — built).** `open_items` carries seven NULL-defaulted
-freeform tracking columns, exposed by this verb as seven OPTIONAL fields with the
-`freeform_` prefix dropped. The item body (`text`) is likewise OPTIONAL — an open item may be
-a pure tracking row (name + state + freeform fields, no body).
-
-| field | type | kind |
-|---|---|---|
-| `current` / `pending` / `total` | INTEGER | quantity |
-| `next` / `last` | TEXT | key position |
-| `due` / `priority` | TEXT | label |
-
-The first five are the common quantity / key-position pattern — beats parsing the item body
-for one value; `due` / `priority` sit outside it but are core to an open item’s tracking.
+The seven freeform fields are defined in �2 (Non-core, `open_items`); on the verb they arrive as OPTIONAL fields with the `freeform_` prefix dropped.
 
 | rule | settled behavior |
 |---|---|
