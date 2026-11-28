@@ -15,6 +15,8 @@ Build **durable, itemizable, addressable, and malleable** note storage:
 
 ### Core terms
 
+The five nouns of the data model itself - the chain-weapon theme a note is built from: routing (vambrace), grouping (intention), content (chain/blade), and cross-reference (reblade).
+
 | Term | Meaning |
 |---|---|
 | **vambrace** | the per-project routing key: the UUIDv7 minted by the `vambrace` verb (action: equip), naming the project's database file `<key>.db` in the armory dir - every routed call is addressed by it |
@@ -25,17 +27,19 @@ Build **durable, itemizable, addressable, and malleable** note storage:
 
 ### Auxiliary terms
 
+Everything else peculiar to the project: the armory and its lifecycle (saga, waylaid), the creation and export paths (equip, acquire, furnish, stack, mythos), and the failed-write cache (deflected write).
+
 | Term | Meaning |
 |---|---|
-| **armory** | the storage dir for vambraces (env `QATENA_ARMORY`, default `./.qatena`): live `<key>.db` files at the top, the `<armory>/waylay/` subdir for waylaid ones, and `armory.json` - the sagas + waylays ledger (a rebuildable display cache; conflict checks never consult it); the `vambrace` tool is "the armory verb" - its 10 actions govern the dir |
-| **equip** | the key-less `vambrace` action that births a vambrace: mints a UUIDv7, instantiates `<key>.db` in the armory dir, bootstraps the schema, and returns the key; optional `saga` names it at birth |
 | **acquire** | the key-less second creation path: imports a mythos snapshot file as a NEW vambrace - the minted key is the armory's, the file's carried key is provenance; entity UUIDs preserved, one genesis `logs` row (area `acquire`) |
-| **saga** | the human-facing name of a vambrace; stored in the database itself (the meta `saga` row) — the source of truth, travels with the file; mirrored in the armory ledger as a display cache; conflict-checked case-insensitively across live + waylaid |
-| **mythos** | a whole-vambrace snapshot: all eight entity spaces + meta (saga when set), in the furnish/acquire codec (md/csv/json/ndjson); the special `furnish` root and the only shape `acquire` imports; deliberately excludes deflected_writes (memory, not truth) and autoexport_registers (machine-local config) |
-| **waylaid** | a vambrace suspended in the server-controlled `<armory>/waylay/` dir: not routable by routed verbs, exports inert; the file location IS the lifecycle state — live (armory top) / waylaid / gone (dismantle request 3) |
-| **stack** | the downward closure of a live root over intention → chain → blade - the unit `furnish` exports and `register_autoexport` watches; its **endpoint set** `E` = the root UUID + every chain UUID + every blade UUID in the stack, the filter set for the reblade layer |
-| **furnish** | the one-shot export action: renders an export to a file immediately (one call, one file, no bookkeeping), opening the vambrace **read-only** - no register row, no log row, no stored signature; `root` selects the scope (a live stack root, or the literal `mythos`) |
+| **armory** | the storage dir for vambraces (env `QATENA_ARMORY`, default `./.qatena`): live `<key>.db` files at the top, the `<armory>/waylay/` subdir for waylaid ones, and `armory.json` - the sagas + waylays ledger (a rebuildable display cache; conflict checks never consult it); the `vambrace` tool is "the armory verb" - its 10 actions govern the dir |
 | **deflected write** | a failed content-write call parked in the per-vambrace `deflected_writes` cache (verb + canonical args + error): memory for the next session, not an execution queue - `replay` is rejected; an identical successful write auto-clears its rows in-transaction; read via `list` (space `deflected_write`), erased by the `deflected_write` tool |
+| **equip** | the key-less `vambrace` action that births a vambrace: mints a UUIDv7, instantiates `<key>.db` in the armory dir, bootstraps the schema, and returns the key; optional `saga` names it at birth |
+| **furnish** | the one-shot export action: renders an export to a file immediately (one call, one file, no bookkeeping), opening the vambrace **read-only** - no register row, no log row, no stored signature; `root` selects the scope (a live stack root, or the literal `mythos`) |
+| **mythos** | a whole-vambrace snapshot: all eight entity spaces + meta (saga when set), in the furnish/acquire codec (md/csv/json/ndjson); the special `furnish` root and the only shape `acquire` imports; deliberately excludes deflected_writes (memory, not truth) and autoexport_registers (machine-local config) |
+| **saga** | the human-facing name of a vambrace; stored in the database itself (the meta `saga` row) — the source of truth, travels with the file; mirrored in the armory ledger as a display cache; conflict-checked case-insensitively across live + waylaid |
+| **stack** | the downward closure of a live root over intention → chain → blade - the unit `furnish` exports and `register_autoexport` watches; its **endpoint set** `E` = the root UUID + every chain UUID + every blade UUID in the stack, the filter set for the reblade layer |
+| **waylaid** | a vambrace suspended in the server-controlled `<armory>/waylay/` dir: not routable by routed verbs, exports inert; the file location IS the lifecycle state — live (armory top) / waylaid / gone (dismantle request 3) |
 
 Themed after a chain weapon system in the project that prompted this design. The relational model (overlapping intentions, first-class blades, UUID reblades) intentionally goes beyond what the old markdown/filesystem system could express.
 
