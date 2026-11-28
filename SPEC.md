@@ -102,9 +102,12 @@ part of v1 (see §5).
 - Every entity lives in a **vambrace** — one Qatena database file. The armory dir comes from the
   `QATENA_ARMORY` environment variable (default `./.qatena`); the server creates it at startup.
   A vambrace file is `<armory_dir>/<key>.db`.
-- A vambrace is created only by the `vambrace` verb, `action: "equip"` (§3.18): it mints a UUIDv7,
-  instantiates `<key>.db`, bootstraps its schema, and returns exactly
-  `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vambrace's **key** (its routing identity).
+- A vambrace is created only by the `vambrace` verb (§3.18), on two paths: `action: "equip"`
+  mints a UUIDv7, instantiates `<key>.db` fresh and empty, bootstraps its schema, and returns
+  exactly `{"vambrace": "<UUIDv7>"}`; `action: "acquire"` imports a mythos snapshot (a
+  whole-vambrace snapshot file) as a NEW vambrace — the key is minted by the armory, and the
+  key carried by the snapshot file is provenance, not identity. The minted UUIDv7 is the
+  vambrace's **key** (its routing identity).
 - Every other verb takes a **required** `vambrace` argument = the routing key. Key format:
   36-char lowercase hyphenated, version nibble 7 —
   `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`.
@@ -113,6 +116,10 @@ part of v1 (see §5).
   The server never silently creates a vambrace or falls back to another.
 - Routing state is the files themselves — a scan / existence check in the armory dir. No in-memory
   registry: routing survives server restart. Each call opens a fresh connection to its vambrace.
+  There are two locations: the armory top level (`<armory>/<key>.db`, LIVE — routable) and the
+  `<armory>/waylay/` subdir (`<armory>/waylay/<key>.db`, WAYLAID — suspended: not routable by
+  routed verbs, exports inert; managed by the key-bearing `waylay` / `recover` / `dismantle`
+  actions, §3.18). No state column anywhere — the location IS the state.
 - `QATENA_DB` (the old single-database env var, default `./.qatena/qatena.db`) is **retired** —
   replaced by `QATENA_ARMORY`.
 
@@ -189,6 +196,19 @@ CREATE INDEX idx_reblades_dst ON reblades (dst_uuid);
 ```
 
 **Intentions are the view layer.** Chains and intentions are many-to-many: a chain can belong to **any number of intentions** (including zero), and an intention can contain any number of chains — overlapping membership is the design, not an exception. Membership is written only via `chain_put` / `chain_split` (the supplied set replaces exactly) and cascade-deletes with the chain. Membership is chain-only: operational entities (open items, rulings, terms) are not filed into intentions.
+
+### Armory (per-vambrace meta)
+
+```sql
+CREATE TABLE IF NOT EXISTS meta (
+  k TEXT PRIMARY KEY,   -- armory-level key (k='saga' = the human-facing name; the in-db copy is the source of truth, the armory ledger is a display cache)
+  v TEXT NOT NULL
+)
+```
+
+In `schema.STATEMENTS`, so `schema.bootstrap` (idempotent, runs on every routed open) migrates existing
+vambraces in place — no separate migration code. v1 has exactly one key: `k='saga'`. The in-db copy
+is the source of truth; the armory ledger is a display cache (§3.18).
 
 ### Non-core (creative-project tracking)
 
@@ -730,12 +750,60 @@ change. Renames and refiling are just this.
 Create and route vambraces. `action: "equip"` mints a UUIDv7, instantiates an empty Qatena database
 file named `<UUIDv7>.db` in the armory dir, bootstraps its schema, and returns exactly
 `{"vambrace": "<UUIDv7>"}` — that UUIDv7 is the vambrace's key, the required `vambrace`
-argument of every other verb. `equip` is the only key-less action.
+argument of every other verb. `equip` takes an optional `saga` (the human-facing name,
+conflict-checked case-insensitively against the known sags before anything is minted;
+omitted = no saga).
 
-`register_autoexport`, `deregister_autoexport`, and `export` are **key-bearing** actions: alongside
-`action` they take the vambrace's key as the `vambrace` argument, validated fail-closed
-exactly like a routed verb (§1.9 — `missing_vambrace` / `malformed_vambrace` /
-`unknown_vambrace`), plus the fields below. Any other action fails with `unsupported_action`.
+Ten actions, in enum order: `equip`, `inventory`, `saga`, `acquire`, `register_autoexport`,
+`deregister_autoexport`, `furnish`, `waylay`, `recover`, `dismantle`. Any other action fails
+with `unsupported_action`. Three are **key-less**: `equip` (mint a new one), `inventory`
+(list both populations), and `acquire` (import a mythos snapshot as a new one). The other
+seven are **key-bearing**: alongside `action` they take the vambrace's key as the `vambrace`
+argument, validated fail-closed exactly like a routed verb (§1.9 — `missing_vambrace` /
+`malformed_vambrace` / `unknown_vambrace`), plus the fields below.
+
+The lifecycle actions manage the file **location**, and the location IS the state (§1.9):
+live at the armory top (`<armory>/<key>.db`), waylaid in `<armory>/waylay/<key>.db>` —
+`saga` accepts a live or waylaid key, `waylay` takes live keys only, `recover` / `dismantle`
+take waylaid keys only, and `register_autoexport` / `deregister_autoexport` / `furnish` take
+live keys only (the routed-verb validation). Armory-level actions mint **no db log rows** —
+the armory ledger and the responses are their record; the one exception is `acquire`'s
+genesis row (below).
+
+`inventory` (key-less, no parameters): both populations — live and waylaid. Live entries
+`{key, saga, size_bytes, modified}`; waylaid entries add `waylaid_at`, `dismantle_requests` (the
+count), and `dismantles_until_destroy` (3 − the count). Strays (`armory.json`, non-key-shaped `.db`
+names, WAL sidecars, other files) skipped silently. Sagas come from the ledger (a display cache); a
+missing or corrupt ledger REBUILDS the sagas from the dbs (the db is truth), zeroes the waylay
+counts (fail-closed), rewrites the ledger, and flags `ledger_rebuilt: true`. Response:
+`{"live": [...], "waylaid": [...]}` + `ledger_rebuilt?`.
+
+`saga` (key-bearing; live or waylaid; unknown key → `not_found`, not `unknown_vambrace`): `label`
+presence-masked — omitted = no-change (returns the current value), `""` = clear, a name = set. The
+set path runs a case-insensitive conflict check against the OTHER known sags (self excluded, live +
+waylaid); a conflict rejects `duplicate_name` naming the offending key. One small RW tx on the db
+(upsert or delete the meta `saga` row; no log row), then the ledger mirror (a cleared saga clears the
+entry). Response: `{"key", "saga": <effective>}` + `ledger_warning?` when `label` was supplied.
+
+`acquire` (key-less; import): REQUIRED `path` (non-empty source file path) + `format`
+(`md`|`csv`|`json`|`ndjson` — the same codec as `furnish`). Strictly ordered, pre-mint pipeline:
+(1) file exists + readable (else `not_found`); (2) parses as a mythos snapshot — a stack-shaped file
+(root/stack/counts/reblades, no meta) is rejected `validation_failed` as not a whole-vambrace
+snapshot; corrupt file → `validation_failed`; (3) effective saga = supplied > file-carried > none
+(supplied `""` = deliberate none, beats file-carried; non-string supplied saga →
+`validation_failed`); (4) case-insensitive conflict vs known sags (live + waylaid) — a conflict
+rejects `duplicate_name` naming the offending key; (5) mint a NEW UUIDv7 + bootstrap. The import
+(`snapshot.import_mythos`) lands all eight spaces verbatim in ONE RW tx: entity UUIDs preserved —
+reblades, log refs, and the graph land intact; reblade endpoints NOT resolved (polymorphic by
+design); value registers `reblade_kinds` / `open_item_states` / `ruling_states` upserted from
+imported rows (import extends a register, never fails on an unknown value); source log ids inserted
+explicitly (dense ids preserved). Then ONE **genesis log row** — the only log row `acquire` mints:
+area `acquire`, title `acquire: from <path>`, house JSON body, no `log_refs`. The effective saga
+(when any) is written to meta. A failed import removes the new `<key>.db` + sidecars (zero file
+litter) → `validation_failed` or `db_error`; then a best-effort ledger mirror (failure →
+`ledger_warning`; never fails the action — the in-db saga is truth). Response:
+`{"key", "saga"?, "imported": {chains, blades, reblades, intentions, open_items, rulings, terms,
+logs — each a count}, "log_id"}` + `ledger_warning?`.
 
 **Autoexport.** A register names a *stack* — root + descendants, over intention → chain → blade
 only — and a destination file + format:
@@ -812,18 +880,42 @@ exactly once (under its `src` owner), never duplicated into the block.
 `{root, emit_path, removed: true, log_id}`. **The exported file is left on disk** — the server
 never deletes user files.
 
-`export` (key-bearing): one-shot export — the same fields as `register_autoexport`
-(`root`, `emit_path`, `emit_format`, optional `reblade_fidelity`), executed immediately with
-**no vambrace mutation**: the vambrace opens **read-only**, and no register row, log row, `log_refs`,
-or stored signature is written. `reblade_fidelity` here is the explicit reblade layer for this
-one render (default `out`) — there is **no presence-masking**: the register row is never
-consulted. The file lands via the same atomic mechanism as the exporter child (shared
-`write_export`: temp + `os.replace`). Response:
-`{root, root_space, emit_path, emit_format, reblade_fidelity, stack: {chains, blades},
-exported: true, exported_at (iso)}` — deliberately **no `replaced`, no `log_id`** (nothing was
-registered, nothing was logged). Errors: unresolvable root → `not_found`; root space not
-stackable (intention/chain/blade) → `validation_failed`; file-write failure → `export_failed`;
-sqlite → `db_error`.
+`furnish` (key-bearing): one-shot export — the renamed `export`. The same fields as
+`register_autoexport` (`root`, `emit_path`, `emit_format`, optional `reblade_fidelity`),
+executed immediately with **no vambrace mutation**: the vambrace opens **read-only**, and no
+register row, log row, `log_refs`, or stored signature is written. `root` selects the scope:
+
+- root = a live `intention` / `chain` / `blade` uuid — the stack export. `reblade_fidelity`
+  here is the explicit reblade layer for this one render (default `out`) — there is
+  **no presence-masking**: the register row is never consulted. The file lands via the same
+  atomic mechanism as the exporter child (shared `write_export`: temp + `os.replace`).
+  Response: `{root, root_space, emit_path, emit_format, reblade_fidelity,
+  stack: {chains, blades}, exported: true, exported_at (iso)}` — deliberately **no
+  `replaced`, no `log_id`** (nothing was registered, nothing was logged). Unresolvable root
+  → `not_found`; root space not stackable (intention/chain/blade) → `validation_failed`; a
+  root that is neither a UUID nor the literal `'mythos'` → `malformed` (a malformed root
+  must never silently degrade into a wider scope).
+- root = the literal `'mythos'` — the whole-vambrace snapshot (`snapshot.write_mythos`:
+  open read-only, compute, render, atomic temp + `os.replace` — the vambrace is never
+  written). `reblade_fidelity` is inapplicable (the whole db is the scope; no reblade
+  layers) and is rejected if supplied. Response:
+  `{root: "mythos", emit_path, emit_format, bytes, exported: true}`.
+
+File-write failure → `export_failed`; sqlite → `db_error`.
+
+**Mythos (the whole-vambrace snapshot).** A mythos file is the payload
+`{exported_at, key, saga?, spaces: {chains, blades, reblades, intentions, open_items, rulings,
+terms, logs}}` — all eight entity spaces in the bare-record vocabulary (NULLs omitted), plus
+the meta: the `key` is the source vambrace's key (provenance, not identity — `acquire` mints
+a new one) and the `saga` from meta (omitted when unset); `exported_at` is ISO-8601 UTC.
+Excluded by design: `deflected_writes` (declared memory, not truth) and
+`autoexport_registers` (machine-local config; an acquired vambrace starts with none). One
+codec, two directions: the same `md` / `csv` / `json` / `ndjson` render serves `furnish`
+(root = `'mythos'`) out and `acquire` in. Mythos identification is uniform across formats —
+the presence of the meta records; a stack-shaped payload (root/stack/counts/reblades, no
+meta) is rejected, and corrupt input fails cleanly (`validation_failed`), never a crash.
+**Round-trip**: `furnish(mythos)` → `acquire` → `furnish(mythos)` is identical in all four
+formats except `exported_at`, the new key, and the acquired db's genesis log row.
 
 **Export lifecycle (convention).** Re-exports are sig-gated: the file is rewritten only when
 the stack signature actually changed. Self-healing: any failed export (disk full, path lost,
@@ -839,28 +931,91 @@ never reused. Pre-existing vambraces (bootstrapped before `reblade_fidelity`) ar
 place by `schema.bootstrap` on next open: the column is added with default `out`,
 idempotently.
 
+**Waylay lifecycle.** The `waylay` / `recover` / `dismantle` actions suspend and end a
+vambrace. They act on the file location, which IS the state (§1.9), and mint no db log rows.
+
+`waylay` (key-bearing, **live keys only**): suspends the vambrace. REQUIRED `emit_path`
+(non-empty, parent directory must exist) + `emit_format` (`md`|`csv`|`json`|`ndjson`) — an
+inline whole-vambrace snapshot (root = `'mythos'`) lands at `emit_path` and is verified
+**non-empty**, and only then does the db move to the server-controlled waylay dir
+(`<armory>/waylay/<key>.db`; `os.replace` — this move alone creates the dir).
+All-or-nothing against the armory: any rejection before the move leaves the live file
+untouched (a successful snapshot may remain on disk — a valid snapshot, kept; the server
+never deletes user files). A waylaid key → `validation_failed` (already waylaid: `recover`
+it or continue with `dismantle`); no live or waylaid file → `not_found`. The ledger records
+`waylays[key] = {waylaid_at, dismantle_requests: []}` — a failed mirror never fails the
+action (the file location is truth; `ledger_warning`). The suspended autoexport register
+count is **info, not rejection**: the registers ride with the file, inert while waylaid,
+resuming on the next relevant write after `recover` (deregistering requires `recover`
+first — it is a routed action). Response: `{key, waylaid: true, export: {path, bytes},
+suspended_autoexport_registers}` + `note?` (when registers) + `ledger_warning?`.
+
+`recover` (key-bearing, **waylaid keys only**): moves the db back from the waylay dir to
+the armory top level (`os.replace`; the armory location must be unoccupied — refusing to
+overwrite). The ledger deletes `waylays[key]`: the dismantle count **RESETS** (the intent
+chain broke; a later re-waylay starts fresh at 0). A missing ledger entry never blocks the
+move — the file location is truth. No db log row. The autoexport register count is info:
+the registers ride back, exports resume on the next relevant write. No waylaid db for the
+key → `not_found` (waylay a live key first). Response: `{key, recovered: true,
+count_reset}` + `note?` (when registers) + `ledger_warning?`.
+
+`dismantle` (key-bearing, **waylaid keys only**): ends a waylaid vambrace. A **live** key is
+rejected `validation_failed` — waylay it first. Requests 1-2 **succeed** (not errors) with
+escalating warnings naming the saga (or the key), what the next request does, and
+`recover` as the escape hatch; nothing is destroyed. Request 3 destroys: the waylaid db is
+deleted and the ledger loses `waylays[key]` + `sagas[key]` (a ghost saga would reject
+future `acquire`s of the same name); registered emit files on disk are orphaned — the
+server never deletes them. The request count N reads `waylays[key].dismantle_requests`
+strictly (a list of non-empty ISO timestamps): any malformed shape, and a tampered list of
+3 or more entries, zero out **fail-closed** — uncertainty never destroys, it only delays;
+a tampered count is surfaced as `ledger_warning`. Responses: requests 1-2 →
+`{key, dismantled: false, request, of: 3, warning}`; request 3 → `{key, dismantled:
+true}` — each + `ledger_warning?`.
+
+**Armory ledger (contract).** `<armory>/armory.json` is a deliberately non-hidden,
+human-facing, server-managed file, written atomically (temp file + `os.replace`, `sort_keys`,
+indented — a crash never leaves a torn ledger). Shape:
+`{"sagas": {key: saga}, "waylays": {key: {waylaid_at, dismantle_requests: [iso]}}}`. The
+sagas map is a **display cache** — derivable from the dbs (each db's `meta 'saga'` row is
+the source of truth, and the conflict checks never consult the ledger). The waylays
+bookkeeping is deliberately **not** derivable — kept out of the candidate db so a corrupt
+or vanished candidate cannot fake its own dismantle count. Fail-closed: a missing or
+corrupt ledger never blocks an action; count uncertainty never destroys, it only delays.
+`inventory` is the only action that rebuilds it: a missing/corrupt ledger rebuilds the
+sagas from the dbs, zeroes the waylay counts, rewrites the ledger, and flags
+`ledger_rebuilt` (a fresh empty armory stays file-free). A failed mirror never fails the
+action — the in-db saga stays truth, and the response carries `ledger_warning`.
+
 ```json
 {
   "name": "vambrace",
-  "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the vambrace (no register row, no log, no stored signature). See SPEC 3.18.",
+  "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. acquire is key-less: REQUIRED 'path' (an existing readable file) + 'format' (md|csv|json|ndjson) import a whole-vambrace snapshot as a NEW vambrace - the mythos shape is required (stack-shaped files are rejected), entity UUIDs are preserved verbatim (reblades, log refs, and the graph land intact), value registers are upserted from the imported rows, one genesis log row (area 'acquire') is minted, and the effective saga (supplied > file-carried > none) conflict-checks before the mint. register_autoexport, deregister_autoexport, and furnish are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and furnish. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately; root = the literal 'mythos' snapshots the whole vambrace (all eight spaces + meta). Both are read-only against the vambrace (no register row, no log, no stored signature). The lifecycle actions manage the file location, which IS the state: waylay is key-bearing, live keys only, with REQUIRED emit_path + emit_format — an inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir; recover is key-bearing, waylaid keys only — moves the file back and resets the dismantle count; dismantle is key-bearing, waylaid keys only — requests 1-2 warn (dismantled: false) and request 3 destroys (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows (acquire's genesis row is the one exception). See SPEC 3.18.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "action": { "type": "string", "enum": ["equip", "register_autoexport", "deregister_autoexport", "export"], "description": "equip: key-less — mints a new vambrace. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the vambrace (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)." },
-      "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the vambrace's key (returned by action=equip). Not used by equip." },
-      "root": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE intention, chain, or blade (register / export); the registered root (deregister). Not used by equip." },
-      "emit_path": { "type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by equip." },
-      "emit_format": { "type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister." },
-      "reblade_fidelity": { "type": "string", "enum": ["none", "in", "out", "both"], "description": "For register_autoexport and export only: reblade layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by equip or deregister." }
+      "action": {"type": "string", "enum": ["equip", "inventory", "saga", "acquire", "register_autoexport", "deregister_autoexport", "furnish", "waylay", "recover", "dismantle"], "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. acquire: key-less - REQUIRED 'path' + 'format', imports a whole-vambrace snapshot (the mythos shape; stack-shaped rejected) as a new vambrace with a genesis log row; the effective saga (supplied > file-carried > none) conflict-checks pre-mint. register_autoexport / deregister_autoexport / furnish: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and furnish additionally require 'emit_format'. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately, read-only against the vambrace (no register row, no log, no signature; reblade_fidelity selects the reblade layer for this render, default out); root = the literal 'mythos' snapshots the whole vambrace (reblade_fidelity is rejected if supplied). waylay: key-bearing, live keys only, REQUIRED 'emit_path' + 'emit_format' — the inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir (the suspended autoexport register count is info, not rejection). recover: key-bearing, waylaid keys only — moves the file back and resets the dismantle count (the intent chain broke). dismantle: key-bearing, waylaid keys only — requests 1-2 succeed with escalating warnings (dismantled: false) naming recover as the escape hatch; request 3 destroys the waylaid database and its ledger entries (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows (acquire's genesis row is the one exception)."},
+      "vambrace": {"type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "For the key-bearing actions (register_autoexport / deregister_autoexport / furnish / saga / waylay / recover / dismantle): the vambrace's key (returned by action=equip; saga accepts live or waylaid keys; waylay takes live keys only; recover and dismantle take waylaid keys only). Not used by equip or inventory."},
+      "root": {"type": "string", "description": "The stack root. furnish: the UUID of a live intention/chain/blade, or the literal 'mythos' (the whole-vambrace snapshot). register_autoexport: a LIVE intention, chain, or blade (the literal 'mythos' is rejected). deregister_autoexport: the registered root. Not used by equip, inventory, or saga."},
+      "emit_path": {"type": "string", "minLength": 1, "description": "For register_autoexport / deregister_autoexport / furnish / waylay: destination file path, used exactly as given; the parent directory must exist. Not used by equip, inventory, saga, recover, or dismantle."},
+      "emit_format": {"type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For register_autoexport, furnish, and waylay: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister."},
+      "reblade_fidelity": {"type": "string", "enum": ["none", "in", "out", "both"], "description": "For register_autoexport and furnish only: reblade layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. furnish: the mode for this one-off stack render; omitted = 'out'; rejected if supplied with the mythos root. Not used by equip or deregister."},
+      "label": {"type": "string", "description": "For action=saga only: the saga (the human-facing name of the vambrace), presence-masked — omitted = no-change, \"\" = clear, a name = set. A set runs a case-insensitive conflict check against the OTHER known sags (self excluded, live + waylaid). Not used by any other action."},
+      "saga": {"type": "string", "description": "For action=equip or acquire: the human-facing name of the vambrace - stored in the database itself (meta 'saga'; it travels with the file) and mirrored in the armory ledger. equip: omitted = no saga. acquire: omitted = the file-carried saga (or none); '' = deliberate none (beats file-carried); a conflicting name (case-insensitive, across live and waylaid) rejects before anything is minted. Not used by any other action."},
+      "path": {"type": "string", "minLength": 1, "description": "For action=acquire only: source file path of the whole-vambrace (mythos) snapshot to import, used exactly as given; the file must exist and be readable. acquire mints a NEW vambrace key - the key carried by the file is provenance, not identity. Not used by any other action."},
+      "format": {"type": "string", "enum": ["md", "csv", "json", "ndjson"], "description": "For action=acquire only: the snapshot format (the same codec as furnish: md|csv|json|ndjson). Not used by any other action."}
     },
     "required": ["action"]
   }
 }
 ```
 
-The key-bearing actions' `vambrace` argument is the routing key itself (§1.9); the schema
-carries it as an optional property (UUIDv7 pattern) — `equip` takes no key, so it is omitted
-there — and it is validated fail-closed exactly like every routed verb.
+The key-bearing actions' (`register_autoexport` / `deregister_autoexport` / `furnish` /
+`saga` / `waylay` / `recover` / `dismantle`) `vambrace` argument is the routing key itself
+(§1.9); the schema carries it as an optional property (UUIDv7 pattern) — `equip`,
+`inventory`, and `acquire` take no key, so it is omitted there — and it is validated
+fail-closed exactly like every routed verb (with the key-location rules above: `saga`
+accepts a live or waylaid key, `waylay` a live key only, `recover` / `dismantle` a
+waylaid key only).
 
 ### 3.19 `open_item`
 
