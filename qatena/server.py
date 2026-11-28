@@ -541,6 +541,20 @@ TOOLS = [
                 "id": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                },
+                "count": {
+                    "type": "boolean",
+                    "description": "Optional. When present, the response is {count, total} instead of the record: count = the response's size (a chain composite → its blade count, a bare record → 1, an unresolved UUID → 0; for get, total = count). Read-surface keys — the section after this one."
+                },
+                "emit_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Optional. Emit the result set to this file instead of returning it (parent directory must exist; atomic temp + os.replace); read-only against the armory — no log row, no signature, no register, no vambrace mutation. Not with count. Read-surface keys — the section after this one."
+                },
+                "emit_format": {
+                    "type": "string",
+                    "enum": ["json", "ndjson"],
+                    "description": "With emit_path: json | ndjson only (md/csv stay with furnish stack renders); the emitted file is the bare payload — no envelope, no exported_at. Read-surface keys — the section after this one."
                 }
             },
             "required": [
@@ -594,6 +608,20 @@ TOOLS = [
                     "type": "integer",
                     "minimum": 1,
                     "description": "Maximum hits. Default 50."
+                },
+                "count": {
+                    "type": "boolean",
+                    "description": "Optional. When present, the response is {count, total} instead of the hits: count = hits in the window (after limit), total = all hits. Read-surface keys — the section after this one."
+                },
+                "emit_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Optional. Emit the result set to this file instead of returning it (parent directory must exist; atomic temp + os.replace); read-only against the armory — no log row, no signature, no register, no vambrace mutation. Not with count. Read-surface keys — the section after this one."
+                },
+                "emit_format": {
+                    "type": "string",
+                    "enum": ["json", "ndjson"],
+                    "description": "With emit_path: json | ndjson only (md/csv stay with furnish stack renders); the emitted file is the bare payload — no envelope, no exported_at. Read-surface keys — the section after this one."
                 }
             },
             "required": [
@@ -671,6 +699,20 @@ TOOLS = [
                     "type": "integer",
                     "minimum": 0,
                     "description": "Default 0."
+                },
+                "count": {
+                    "type": "boolean",
+                    "description": "Optional. When present, the response is {count, total} instead of the items: count = rows in the window (after limit / offset), total = all rows matching the filters. Read-surface keys — the section after this one."
+                },
+                "emit_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Optional. Emit the result set to this file instead of returning it (parent directory must exist; atomic temp + os.replace); read-only against the armory — no log row, no signature, no register, no vambrace mutation. Not with count. Read-surface keys — the section after this one."
+                },
+                "emit_format": {
+                    "type": "string",
+                    "enum": ["json", "ndjson"],
+                    "description": "With emit_path: json | ndjson only (md/csv stay with furnish stack renders); the emitted file is the bare payload — no envelope, no exported_at. Read-surface keys — the section after this one."
                 }
             },
             "required": [
@@ -712,6 +754,20 @@ TOOLS = [
                         "source",
                         "see"
                     ]
+                },
+                "count": {
+                    "type": "boolean",
+                    "description": "Optional. When present, the response is {count, total} instead of the edges: count = edges (no limit today, so count = total). Read-surface keys — the section after this one."
+                },
+                "emit_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Optional. Emit the result set to this file instead of returning it (parent directory must exist; atomic temp + os.replace); read-only against the armory — no log row, no signature, no register, no vambrace mutation. Not with count. Read-surface keys — the section after this one."
+                },
+                "emit_format": {
+                    "type": "string",
+                    "enum": ["json", "ndjson"],
+                    "description": "With emit_path: json | ndjson only (md/csv stay with furnish stack renders); the emitted file is the bare payload — no envelope, no exported_at. Read-surface keys — the section after this one."
                 }
             },
             "required": [
@@ -766,6 +822,20 @@ TOOLS = [
                 "expand_chains": {
                     "type": "boolean",
                     "description": "Include blades for chain nodes. Default false."
+                },
+                "count": {
+                    "type": "boolean",
+                    "description": "Optional. When present, the response is {count, total} instead of the nodes: count = visited nodes (no window today, so count = total). Read-surface keys — the section after this one."
+                },
+                "emit_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Optional. Emit the result set to this file instead of returning it (parent directory must exist; atomic temp + os.replace); read-only against the armory — no log row, no signature, no register, no vambrace mutation. Not with count. Read-surface keys — the section after this one."
+                },
+                "emit_format": {
+                    "type": "string",
+                    "enum": ["json", "ndjson"],
+                    "description": "With emit_path: json | ndjson only (md/csv stay with furnish stack renders); the emitted file is the bare payload — no envelope, no exported_at. Read-surface keys — the section after this one."
                 }
             },
             "required": [
@@ -776,7 +846,7 @@ TOOLS = [
     },
     {
         "name": "history",
-        "description": "Reserved revision surface: contract now, mechanism deferred. Currently returns the coarse trace — log rows touching this UUID via log_refs, with op codes, titles, and timestamps, newest first. The field-level old→new history this contract carries is not yet implemented; clients may build against the contract shape.",
+        "description": "Field-level old→new history for a UUID. Returns {genesis, revisions, trace}: genesis = the vambrace's sidecar birth record, or null; revisions = limit-governed field rows (default 20), each joined with its log's resolved op + title, orphan rows (unresolvable log_id) excluded; trace = the FULL log rows (op, title, created, body, refs) touching the UUID via log_refs — the coarse trace deepened, same time window as the revisions page when revisions exist, else default 20. Carries no live state (current state is get's job); no include_live. The read-surface keys (count / emit_path / emit_format) apply — the section after this one.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -793,6 +863,20 @@ TOOLS = [
                     "type": "integer",
                     "minimum": 1,
                     "description": "Default 20."
+                },
+                "count": {
+                    "type": "boolean",
+                    "description": "Optional. When present, the response is {count, total} instead of {genesis, revisions, trace}: count = revision rows in the window (the genesis frame is never counted), total = unwindowed. Read-surface keys — the section after this one."
+                },
+                "emit_path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Optional. Emit the result set to this file instead of returning it (parent directory must exist; atomic temp + os.replace); read-only against the armory — no log row, no signature, no register, no vambrace mutation. Not with count. Read-surface keys — the section after this one."
+                },
+                "emit_format": {
+                    "type": "string",
+                    "enum": ["json", "ndjson"],
+                    "description": "With emit_path: json | ndjson only (md/csv stay with furnish stack renders); the emitted file is the bare payload — no envelope, no exported_at. Read-surface keys — the section after this one."
                 }
             },
             "required": [
@@ -1003,7 +1087,8 @@ def _call_equip(armory_dir, arguments):
     human-facing name) conflict-checks case-insensitively against the known
     sags -- the meta 'saga' row of every live and waylaid db -- BEFORE
     minting, so a conflict rejects with no file litter and no ledger entry.
-    Success: mint, bootstrap, one meta row (small RW tx, no log row), then
+    Success: mint, bootstrap, the history sidecar with its one equip
+    genesis row, one meta row (small RW tx, no log row), then
     the ledger mirror (a failed mirror never fails the action -- the db is
     truth)."""
     saga = arguments.get("saga")
@@ -1023,11 +1108,13 @@ def _call_equip(armory_dir, arguments):
     conn = db.connect(path)
     try:
         schema.bootstrap(conn)
+        _attach_history(conn, path)  # the sidecar: created eagerly at birth (SPEC 3.17)
         if saga:
             armory.set_db_saga(conn, saga)
+        _seed_sidecar_genesis(conn, "equip", None, None)
     except sqlite3.Error as e:
         # no file litter: a failed equip leaves no partial vambrace behind
-        for name in (path, path + "-wal", path + "-shm"):
+        for name in _vambrace_files(path):
             try:
                 os.remove(name)
             except OSError:
@@ -1054,7 +1141,8 @@ def _call_acquire(armory_dir, arguments):
     waylaid. Only then is the key minted and the snapshot imported in one
     transaction (entity UUIDs verbatim; value registers upserted; one
     genesis log row, area 'acquire' -- the one db log row this action
-    mints; the ledger and the response carry the rest). A rejected or
+    mints; the history sidecar gets its one acquire genesis row pointing
+    at it; the ledger and the response carry the rest). A rejected or
     failed acquire leaves nothing behind (equip's no-file-litter pattern)."""
     path = arguments.get("path")
     if not isinstance(path, str) or not path:
@@ -1107,19 +1195,33 @@ def _call_acquire(armory_dir, arguments):
         result = snapshot.import_mythos(db_path, key, payload, path, saga)
     except ValueError as e:
         # no file litter: a rejected acquire leaves no partial vambrace behind
-        for name in (db_path, db_path + "-wal", db_path + "-shm"):
+        for name in _vambrace_files(db_path):
             try:
                 os.remove(name)
             except OSError:
                 pass
         return _tool_error("validation_failed", str(e)), True
     except sqlite3.Error as e:
-        for name in (db_path, db_path + "-wal", db_path + "-shm"):
+        for name in _vambrace_files(db_path):
             try:
                 os.remove(name)
             except OSError:
                 pass
         return _tool_error("db_error", str(e)), True
+    conn = db.connect(db_path)
+    try:
+        _attach_history(conn, db_path)  # the sidecar: created eagerly at birth
+        _seed_sidecar_genesis(conn, "acquire", path, result["log_id"])
+    except sqlite3.Error as e:
+        # no file litter: a failed birth leaves no partial vambrace behind
+        for name in _vambrace_files(db_path):
+            try:
+                os.remove(name)
+            except OSError:
+                pass
+        return _tool_error("db_error", str(e)), True
+    finally:
+        conn.close()
     response = {"key": key}
     if saga:
         response["saga"] = saga
@@ -1223,6 +1325,87 @@ def _validate_routing_key(key, armory_dir):
         return None, (_tool_error("unknown_vambrace",
                                   f"unknown vambrace '{key}': no such vambrace (create one with the vambrace verb)"), True)
     return path, None
+
+
+def _sidecar_path(main_path):
+    """The history sidecar beside a main db: <key>.history.db (SPEC
+    3.17). The stem <key>.history never matches the UUIDv7 routing-key
+    pattern, so the armory scan ignores it structurally -- no
+    special-casing anywhere."""
+    return main_path[:-3] + ".history.db"
+
+
+def _sidecar_files(main_path):
+    """The history sidecar of a main db path, with its WAL side
+    files."""
+    sidecar = _sidecar_path(main_path)
+    return [sidecar, sidecar + "-wal", sidecar + "-shm"]
+
+
+def _vambrace_files(main_path):
+    """The files of a vambrace as a unit (state IS file location):
+    the main db with its WAL side files, then the history sidecar with
+    its WAL side files -- the sidecar travels with the main db."""
+    return [main_path, main_path + "-wal", main_path + "-shm"] + \
+        _sidecar_files(main_path)
+
+
+def _attach_history(conn, main_path):
+    """The open-path history sidecar (SPEC 3.17), at every routed open:
+    when <key>.history.db is missing (a pre-build vambrace) it is created
+    and bootstrapped here with NO genesis row -- no false birth claim --
+    then it is ATTACHed as 'hist' on this connection, BEFORE any
+    transaction begins, so the spanning BEGIN IMMEDIATE..COMMIT covers
+    both files: one COMMIT writes both, any failure rolls both back (plain
+    SQLite multi-database transaction semantics; no recovery machinery).
+    The sidecar gets the same pragmas as a direct open: WAL (persistent,
+    a no-op once set) and synchronous NORMAL (per-connection)."""
+    sidecar = _sidecar_path(main_path)
+    if not os.path.exists(sidecar):
+        sconn = db.connect(sidecar)
+        try:
+            schema.bootstrap_sidecar(sconn)
+        finally:
+            sconn.close()
+    conn.execute("ATTACH DATABASE ? AS hist", (sidecar,))
+    conn.execute("PRAGMA hist.journal_mode = WAL")
+    conn.execute("PRAGMA hist.synchronous = NORMAL")
+
+
+def _seed_sidecar_genesis(conn, kind, detail, log_id):
+    """The sidecar's one-row birth frame (SPEC 3.17): kind 'equip'
+    (detail/log_id NULL -- armory actions mint no db log rows) or
+    'acquire' (detail = the mythos source path, log_id = the main db's
+    genesis log row). One small RW tx on the open connection, after the
+    main-db work so the log id is known; the sidecar must already be
+    attached as 'hist'. A vambrace carries at most ONE genesis row."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT INTO hist.genesis (kind, detail, log_id, created) "
+            "VALUES (?, ?, ?, ?)", (kind, detail, log_id, db.now_ns()))
+        conn.execute("COMMIT")
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+
+
+def _move_vambrace_pair(src_main, dst_main):
+    """Move a vambrace as a unit into the destination dir of
+    ``dst_main`` (state IS file location): the main db, then its history
+    sidecar (when present -- a pre-build waylay has none yet), each with
+    its -wal / -shm side file when present. Sequential os.replace on the
+    same volume; the pre-move checks are the all-or-nothing gate."""
+    dst_dir = os.path.dirname(dst_main)
+    for base in (src_main,) + tuple(_sidecar_files(src_main)):
+        for name in (base, base + "-wal", base + "-shm"):
+            if os.path.exists(name):
+                os.replace(name, os.path.join(dst_dir, os.path.basename(name)))
+
+
 
 
 # A stack is defined over intention -> chain -> blade only (SPEC 3.18).
@@ -1595,8 +1778,9 @@ def _call_waylay(armory_dir, arguments):
     """waylay (draft 5.6): key-bearing, LIVE keys only. Suspends the
     vambrace: an inline whole-vambrace snapshot (root='mythos') lands at
     emit_path and is verified non-empty, and only then does the db move to
-    the server-controlled waylay dir (os.replace; this move alone creates
-    the dir). All-or-nothing against the armory: any rejection before the
+    the server-controlled waylay dir with its history sidecar (the move
+    alone creates the dir; the sidecar travels as a unit -- state IS file
+    location). All-or-nothing against the armory: any rejection before the
     move leaves the live file untouched (a successful snapshot may remain
     on disk — a valid snapshot, kept; the server never deletes user files).
     The ledger records waylays[key] = {waylaid_at, dismantle_requests: []}
@@ -1659,7 +1843,7 @@ def _call_waylay(armory_dir, arguments):
                            "exists (impossible state; refusing)"), True
     try:
         os.makedirs(os.path.dirname(waylaid_path), exist_ok=True)
-        os.replace(live_path, waylaid_path)
+        _move_vambrace_pair(live_path, waylaid_path)
     except OSError as e:
         return _tool_error("db_error",
                            f"waylay move failed: {type(e).__name__}: {e}"), True
@@ -1685,8 +1869,9 @@ def _call_waylay(armory_dir, arguments):
 
 
 def _call_recover(armory_dir, arguments):
-    """recover (draft 5.7): key-bearing, WAYLAID keys only. Moves the db
-    back from the waylay dir to the armory top level (os.replace; the
+    """recover (draft 5.7): key-bearing, WAYLAID keys only. Moves the db and
+    its history sidecar back from the waylay dir to the armory top level
+    (os.replace; the
     armory location must be unoccupied — refusing to overwrite). The
     ledger deletes waylays[key]: the dismantle count RESETS (the intent
     chain broke; a later re-waylay starts fresh at 0). No db log row. The
@@ -1712,7 +1897,7 @@ def _call_recover(armory_dir, arguments):
     if err_msg is not None:
         return _tool_error("db_error", err_msg), True
     try:
-        os.replace(waylaid_path, live_path)
+        _move_vambrace_pair(waylaid_path, live_path)
     except OSError as e:
         return _tool_error("db_error",
                            f"recover move failed: {type(e).__name__}: {e}"), True
@@ -1740,8 +1925,8 @@ def _call_dismantle(armory_dir, arguments):
     is rejected with 'waylay first' — the multi-step enforcement lives
     here). Requests 1-2 SUCCEED (not errors) with escalating warnings
     naming the saga, what the next request does, and recover <key> as the
-    escape hatch; nothing is destroyed. Request 3 destroys: the waylaid
-    db is deleted and the ledger loses waylays[key] + sagas[key] (a ghost
+    escape hatch; nothing is destroyed. Request 3 destroys: the waylaid db
+    and its history sidecar are deleted and the ledger loses waylays[key] + sagas[key] (a ghost
     saga would reject future acquires of the same name). Registered emit
     files on disk are orphaned — the server never deletes them. The count
     N reads waylays[key].dismantle_requests STRICTLY (a list of non-empty
@@ -1782,6 +1967,12 @@ def _call_dismantle(armory_dir, arguments):
         except OSError as e:
             return _tool_error("db_error",
                                f"dismantle failed: {type(e).__name__}: {e}"), True
+        # the sidecar travels with the db: gone with it (absent is fine)
+        for name in _sidecar_files(waylaid_path):
+            try:
+                os.remove(name)
+            except OSError:
+                pass
         ledger["waylays"].pop(key, None)
         ledger["sagas"].pop(key, None)
         warning = armory.write_ledger(armory_dir, ledger)
@@ -1890,6 +2081,7 @@ def _call_routed(armory_dir, name, arguments):
     conn = db.connect(path)
     try:
         schema.bootstrap(conn)  # idempotent: keeps a hand-touched vambrace file self-healing
+        _attach_history(conn, path)  # the history sidecar: create-if-missing + ATTACH (SPEC 3.17)
         try:
             # the verb layer never sees the routing key
             args = {k: v for k, v in arguments.items() if k != "vambrace"}

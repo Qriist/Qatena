@@ -124,9 +124,8 @@ class Merge(QatenaTestCase):
         self.assertEqual(self.pkeys(dst_uuid=did), set())
         # ...but its log_refs trace survives in history
         h = self.verb("history", id=did)
-        self.assertEqual(h["trace_level"], "coarse")
-        self.assertTrue(any(e["op"] == "deleted" for e in h["entries"]))
-        self.assertTrue(any(e["title"].startswith("chain_merge") for e in h["entries"]))
+        self.assertTrue(any(e["op"] == "deleted" for e in h["trace"]))
+        self.assertTrue(any(e["title"].startswith("chain_merge") for e in h["trace"]))
         ops = {u: o for _, u, o in self.ref_ops(res["log_id"])}
         self.assertEqual(ops[vid], "modified")
         self.assertEqual(ops[did], "deleted")

@@ -21,7 +21,9 @@ Structural rules implemented here (SPEC 1):
 """
 
 import json
+import os
 import re
+import secrets
 import sqlite3
 
 from .autolink import load_aliases, analyze, mint_name_refs
@@ -234,12 +236,14 @@ _OP_PRIORITY = {"created": 0, "modified": 1, "deleted": 2, "referenced": 3}
 
 
 class _Tx:
-    """Scratch state of one write transaction: log refs + body records."""
+    """Scratch state of one write transaction: log refs, body records, and
+    the content-field revision rows (SPEC 3.17) the handlers collected."""
 
     def __init__(self, now):
         self.now = now
         self.refs = {}
         self.records = []
+        self.revisions = []  # (uuid, field, old, new) tuples, mint order
 
     def ref(self, uuid, op):
         cur = self.refs.get(uuid)
@@ -280,12 +284,36 @@ def _rollback(conn):
         pass
 
 
+def _rev(tx, uuid, field, old, new):
+    """Mint one revision row (SPEC 3.17): content fields only; a no-op
+    write (old == new, incl. None == None) mints nothing."""
+    if old != new:
+        tx.revisions.append((uuid, field, old, new))
+
+
+def _hist_attached(conn):
+    """True when the history sidecar is ATTACHed as `hist` — every
+    routed open (server, P3); a bare unit-level connection carries no
+    sidecar and mints no revision rows."""
+    return any(r["name"] == "hist" for r in conn.execute("PRAGMA database_list"))
+
+
 def _run_write(handler, conn, args, name):
     tx = _Tx(now_ns())
     _begin(conn)
     try:
         result, title, area = handler(conn, args, tx)
         log_id = _mint_log(conn, tx, title, area)
+        # revision rows (SPEC 3.17): the handler collected the content-field
+        # changes on tx.revisions; every row of a batch shares the batch's
+        # single log_id, and a rolled-back write rolls its rows back with it.
+        # A bare unit-level connection has no `hist` attached and mints none.
+        if tx.revisions and _hist_attached(conn):
+            for uuid, field, old, new in tx.revisions:
+                conn.execute(
+                    "INSERT INTO hist.revisions (uuid, field, old_val, new_val, "
+                    "log_id, created) VALUES (?, ?, ?, ?, ?, ?)",
+                    (uuid, field, old, new, log_id, tx.now))
         result = dict(result)
         result["log_id"] = log_id
         ops = result.get("ops")
@@ -430,6 +458,7 @@ def _h_chain_put(conn, args, tx):
             (cid, name, tx.now, tx.now),
         )
         tx.ref(cid, "created")
+        _rev(tx, cid, "name", None, name)  # a first appearance is a change
         final_name = name
     else:
         cid = row["id"]
@@ -445,9 +474,28 @@ def _h_chain_put(conn, args, tx):
                 (name, tx.now, cid),
             )
             tx.ref(cid, "modified")
+            _rev(tx, cid, "name", row["name"], name)
         final_name = name if renamed else row["name"]
     if intentions is not None:
+        old_names = _intention_names(conn, cid)
+        old_set = set(old_names)
         _apply_intentions(conn, tx, cid, intentions)
+        # SPEC 3.17: intention membership is one revision row per changed
+        # name (added NULL->name, removed name->NULL); an orientation-only
+        # change mints nothing (membership rows are by name).
+        supplied_set = set()
+        added = []
+        for e in intentions:
+            n = e["name"]
+            if n not in supplied_set:
+                supplied_set.add(n)
+                if n not in old_set:
+                    added.append(n)
+        removed = [n for n in old_names if n not in supplied_set]
+        for n in added:
+            _rev(tx, cid, "intention", None, n)
+        for n in removed:
+            _rev(tx, cid, "intention", n, None)
     rec = {"op": "chain_put", "chain": cid, "name": final_name}
     if intentions is not None:
         rec["intentions"] = [e.get("name") if isinstance(e, dict) else None for e in intentions]
@@ -461,9 +509,10 @@ def _h_chain_delete(conn, args, tx):
         raise VerbError("not_found", "chain not found (id or name required)")
     cid, cname = row["id"], row["name"]
     incoming = conn.execute("SELECT * FROM reblades WHERE dst_uuid = ?", (cid,)).fetchall()
-    blade_ids = [
-        r["id"]
-        for r in conn.execute("SELECT id FROM chain_blades WHERE chain_id = ?", (cid,))
+    # (id, text) pairs: the texts feed the forensic revision rows (SPEC 3.17).
+    blade_rows = [
+        (r["id"], r["text"])
+        for r in conn.execute("SELECT id, text FROM chain_blades WHERE chain_id = ?", (cid,))
     ]
     conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (cid,))  # outgoing (header)
     # Blades cascade-delete with the header, but reblades hold polymorphic
@@ -475,8 +524,10 @@ def _h_chain_delete(conn, args, tx):
     )
     conn.execute("DELETE FROM chain_headers WHERE id = ?", (cid,))   # blades + map cascade
     tx.ref(cid, "deleted")
-    for b in blade_ids:
-        tx.ref(b, "deleted")
+    _rev(tx, cid, "name", cname, None)  # survives the entity (the forensic surface)
+    for bid, btext in blade_rows:
+        tx.ref(bid, "deleted")
+        _rev(tx, bid, "text", btext, None)
     tx.record({"op": "chain_delete", "chain": cid, "name": cname, "incoming": len(incoming)})
     return {"incoming": [_reblade_dict(r) for r in incoming]}, f'chain_delete "{cname}"', "chain"
 
@@ -512,6 +563,7 @@ def _h_chain_split(conn, args, tx):
         (nid, name, tx.now, tx.now),
     )
     tx.ref(nid, "created")
+    _rev(tx, nid, "name", None, name)  # ONLY the new header's name (SPEC 3.17)
     if args.get("intentions") is not None:
         _apply_intentions(conn, tx, nid, args["intentions"])
     moved_set = set(moved)
@@ -584,6 +636,7 @@ def _h_chain_merge(conn, args, tx):
     conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (did,))  # its outgoing
     conn.execute("DELETE FROM chain_headers WHERE id = ?", (did,))   # stops resolving
     tx.ref(did, "deleted")
+    _rev(tx, did, "name", dissolved["name"], None)  # ONLY the dissolved name (SPEC 3.17)
     tx.record({
         "op": "chain_merge", "into": vid, "fold": did,
         "blades": did_ids, "intentions": fold_secs, "retargeted": len(retargeted),
@@ -616,6 +669,7 @@ def _h_blade_insert(conn, args, tx):
         (bid, cid, text, tx.now, tx.now),
     )
     tx.ref(bid, "created")
+    _rev(tx, bid, "text", None, text)
     ids = [b["id"] for b in ordered]
     ids.insert(index, bid)
     _rebuild_order(conn, cid, ids)
@@ -667,6 +721,7 @@ def _h_blade_edit(conn, args, tx):
         )
     conn.execute("UPDATE chain_blades SET text = ?, updated = ? WHERE id = ?", (text, tx.now, bid))
     tx.ref(bid, "modified")
+    _rev(tx, bid, "text", row["text"], text)  # a no-op edit mints nothing
     conn.execute("UPDATE chain_headers SET updated = ? WHERE id = ?", (tx.now, cid))
     tx.ref(cid, "modified")
     pos = conn.execute(
@@ -752,6 +807,7 @@ def _h_blade_delete(conn, args, tx):
     incoming = conn.execute("SELECT * FROM reblades WHERE dst_uuid = ?", (bid,)).fetchall()
     conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (bid,))  # outgoing
     conn.execute("DELETE FROM chain_blades WHERE id = ?", (bid,))
+    _rev(tx, bid, "text", row["text"], None)
     remaining = [b["id"] for b in _ordered_blades(conn, cid)]
     _rebuild_order(conn, cid, remaining)
     conn.execute("UPDATE chain_headers SET updated = ? WHERE id = ?", (tx.now, cid))
@@ -864,10 +920,21 @@ def _h_batch(conn, args, tx):
 # leaves it unchanged. Column map: contract field -> storage column.
 _OI_INT_FIELDS = ("current", "pending", "total")      # freeform_<f> INTEGER
 _OI_STR_FIELDS = ("next", "last", "due", "priority")  # freeform_<f> TEXT
+_OI_INT_COLUMNS = tuple("freeform_" + f for f in _OI_INT_FIELDS)
 
 
 def _oi_column(field):
     return field if field == "text" else f"freeform_{field}"
+
+
+def _oi_rev(tx, oid, col, old, new):
+    """One open_item revision row (SPEC 3.17): INTEGER freeform columns
+    normalize to their decimal string form so old/new compare and store
+    consistently; a no-op change mints nothing (via _rev)."""
+    if col in _OI_INT_COLUMNS:
+        old = None if old is None else str(int(old))
+        new = None if new is None else str(int(new))
+    _rev(tx, oid, col, old, new)
 
 
 def _oi_check_state(conn, state):
@@ -976,17 +1043,23 @@ def _h_open_item_put(conn, args, tx):
     if row is None:
         # Mint: always through a non-empty name.
         oid = new_uuid7()
+        final_state = state if state is not None else "open"
         conn.execute(
             "INSERT INTO open_items (id, name, state, text, created, updated, "
             "freeform_current, freeform_pending, freeform_total, "
             "freeform_next, freeform_last, freeform_due, freeform_priority) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (oid, name, state if state is not None else "open",
+            (oid, name, final_state,
              sets.get("text"), tx.now, tx.now,
              sets.get("current"), sets.get("pending"), sets.get("total"),
              sets.get("next"), sets.get("last"), sets.get("due"), sets.get("priority")),
         )
         tx.ref(oid, "created")
+        # A first appearance is a change: every supplied field mints (SPEC 3.17).
+        _rev(tx, oid, "name", None, name)
+        _rev(tx, oid, "state", None, final_state)
+        for f, v in sets.items():
+            _oi_rev(tx, oid, _oi_column(f), None, v)
         final_name, created = name, True
     else:
         oid = row["id"]
@@ -1013,6 +1086,8 @@ def _h_open_item_put(conn, args, tx):
                 [v for _, v in changed] + [tx.now, oid],
             )
             tx.ref(oid, "modified")
+            for col, v in changed:
+                _oi_rev(tx, oid, col, row[col], v)
         # A no-op put changes nothing: no 'modified' ref, updated untouched.
         final_name = name if renamed else row["name"]
 
@@ -1062,6 +1137,14 @@ def _h_open_item_delete(conn, args, tx):
     conn.execute("DELETE FROM reblades WHERE src_uuid = ?", (oid,))  # outgoing
     conn.execute("DELETE FROM open_items WHERE id = ?", (oid,))
     tx.ref(oid, "deleted")
+    # every non-null content field -> NULL; machine columns (id, created,
+    # updated) mint nothing. The rows survive the entity (SPEC 3.17).
+    for col in row.keys():
+        if col in ("id", "created", "updated"):
+            continue
+        v = row[col]
+        if v is not None:
+            _oi_rev(tx, oid, col, v, None)
     tx.record({"op": "open_item_delete", "item": oid, "name": oname})
     return (
         {"id": oid, "name": oname, "incoming": [_reblade_dict(r) for r in incoming]},
@@ -1072,24 +1155,150 @@ def _h_open_item_delete(conn, args, tx):
 
 # ----------------------------------------------------------------- read verbs
 
+# ------------------------------------------------------- read-surface keys (P5)
+# SPEC, "Read-surface keys" (the section after 3.17): count / emit_path /
+# emit_format on the six read verbs. A result can be counted before it is
+# fetched, or spilled to a file instead of the agent's context. No new
+# verbs -- the tool surface stays 20.
+
+# The window a fetch renders: the verb's own default (the normal branch,
+# limit omitted), no cap (the emit branch, limit omitted), or an explicit
+# limit int.
+_DEFAULT = object()
+_FULL = object()
+
+
+def _emit_file(emit_path, emit_format, payload, ndjson_records):
+    """Write the bare payload to emit_path (atomic temp + os.replace, the
+    snapshot pattern). The parent directory must exist. json = one
+    document; ndjson = one record per line -- a non-list payload (get's
+    record, history's object) is the single line. No envelope, no
+    exported_at: provenance lives in the tool response. Returns the bytes
+    written."""
+    parent = os.path.dirname(emit_path)
+    if parent and not os.path.isdir(parent):
+        raise VerbError("validation_failed",
+                        f"emit_path parent directory does not exist: {parent!r}")
+    if ndjson_records:
+        rendered = "".join(
+            json.dumps(rec, ensure_ascii=False, separators=(",", ":")) + "\n"
+            for rec in payload)
+    elif emit_format == "json":
+        rendered = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    else:
+        rendered = json.dumps(payload, ensure_ascii=False,
+                              separators=(",", ":")) + "\n"
+    tmp = f"{emit_path}.tmp-{secrets.token_hex(8)}"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.write(rendered)
+        os.replace(tmp, emit_path)
+    except OSError as e:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise VerbError("db_error", f"emit write failed: {type(e).__name__}: {e}") from None
+    return os.path.getsize(emit_path)
+
+
+def _read_surface(args, fetch, count_total, wrap, ndjson_records=False):
+    """Branch one of the six read verbs over the read-surface keys.
+
+    fetch(window) -> (records, count): the bare result-set records for
+    the window (_DEFAULT | _FULL | an explicit limit int) plus their
+    window-honest count ("would have shown up", including limit/offset/
+    window effects) -- a list of records (list / search / reblades_of /
+    follow), the single record (get), or the {genesis, revisions, trace}
+    object (history). count_total() -> (count, total) for the count
+    branch; total is the unwindowed count (the genesis frame is never
+    counted; per-verb, by construction). wrap(records) -> the
+    normal-branch body: the container verbs wrap their records in their
+    one keyed field; get and history are identity. The emit branch
+    writes the bare records -- never the wrap, never an envelope.
+
+    count + emit_path = validation_failed (a record set and a count are
+    mutually exclusive; the emit receipt already carries count); a lone
+    emit_format is validation_failed too. The emit branch is read-only
+    against the armory: no log row, no signature, no register, no
+    vambrace mutation."""
+    count = args.get("count")
+    if count is not None and not isinstance(count, bool):
+        raise VerbError("validation_failed", "count must be a boolean")
+    emit_path = args.get("emit_path")
+    if emit_path is not None and (not isinstance(emit_path, str) or not emit_path):
+        raise VerbError("validation_failed", "emit_path must be a non-empty string")
+    emit_format = args.get("emit_format")
+    if emit_format is not None and emit_format not in ("json", "ndjson"):
+        raise VerbError(
+            "validation_failed",
+            "emit_format must be 'json' or 'ndjson' (md/csv stay with furnish "
+            "stack renders)")
+    if count and emit_path is not None:
+        raise VerbError(
+            "validation_failed",
+            "count and emit_path are mutually exclusive (the emit receipt "
+            "already carries count)")
+    if emit_format is not None and emit_path is None:
+        raise VerbError("validation_failed", "emit_format requires emit_path")
+    limit = args.get("limit")
+    if limit is not None:
+        limit = _check_int(limit, "limit", 1)
+    if count:
+        c, t = count_total()
+        return {"count": c, "total": t}
+    if emit_path is not None:
+        payload, n_full = fetch(_FULL)
+        if limit is None:
+            c = n_full
+        else:
+            payload, c = fetch(limit)
+        nbytes = _emit_file(emit_path, emit_format, payload, ndjson_records)
+        return {
+            "emitted": True,
+            "emit_path": emit_path,
+            "emit_format": emit_format,
+            "count": c,
+            "bytes": nbytes,
+            "truncated": limit is not None and c < n_full,
+        }
+    return wrap(fetch(_DEFAULT if limit is None else limit)[0])
+
+
 def _h_get(conn, args):
     uid = args.get("id")
     if not isinstance(uid, str) or not uid:
         raise VerbError("validation_failed", "id is required")
     if conn.execute("SELECT 1 FROM chain_headers WHERE id = ?", (uid,)).fetchone() is not None:
-        return _chain_composite(conn, uid)
-    row = conn.execute(
-        "SELECT b.id, b.chain_id, b.text, b.created, b.updated, h.name AS chain_name "
-        "FROM chain_blades b JOIN chain_headers h ON h.id = b.chain_id WHERE b.id = ?",
-        (uid,),
-    ).fetchone()
-    if row is not None:
-        return _bare(row)
-    for table in ("chain_intentions", "open_items", "rulings", "terms"):
-        row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (uid,)).fetchone()
+        rec = _chain_composite(conn, uid)
+        size = len(rec["blades"])
+    else:
+        row = conn.execute(
+            "SELECT b.id, b.chain_id, b.text, b.created, b.updated, h.name AS chain_name "
+            "FROM chain_blades b JOIN chain_headers h ON h.id = b.chain_id WHERE b.id = ?",
+            (uid,),
+        ).fetchone()
         if row is not None:
-            return _bare(row)
-    raise VerbError("not_found", f"no tracked entity with id {uid}")
+            rec, size = _bare(row), 1
+        else:
+            rec, size = None, 0
+            for table in ("chain_intentions", "open_items", "rulings", "terms"):
+                row = conn.execute(f"SELECT * FROM {table} WHERE id = ?", (uid,)).fetchone()
+                if row is not None:
+                    rec, size = _bare(row), 1
+                    break
+
+    def fetch(window):
+        if rec is None:
+            raise VerbError("not_found", f"no tracked entity with id {uid}")
+        return rec, size
+
+    def count_total():
+        # the count branch answers an unresolved UUID with 0 (not not_found)
+        return size, size
+
+    return _read_surface(args, fetch, count_total, lambda p: p,
+                         ndjson_records=False)
 
 
 _SEARCH_SPACES = ("chain", "blade", "intention", "open_item", "ruling", "term", "log")
@@ -1153,21 +1362,42 @@ def _h_search(conn, args):
         active = list(dict.fromkeys(spaces))
     context = args.get("context", 120)
     _check_int(context, "context", 0)
-    limit = args.get("limit", 50)
-    _check_int(limit, "limit", 1)
-    hits = {}
-    for space in active:
-        for uid, info in _search_rows(conn, space, probes).items():
-            text = info["v"] or ""
-            probe = next((p for p in probes if p.casefold() in text.casefold()), "")
-            hits[(space, uid)] = {
-                "space": space,
-                "id": uid,
-                "name": info["n"] or "",
-                "context": _window(text, probe, context) if probe else "",
-            }
-    ordered = sorted(hits.values(), key=lambda h: (h["space"], h["id"]))
-    return {"hits": ordered[:limit]}
+    cache = {}
+
+    def ordered():
+        if "hits" not in cache:
+            hits = {}
+            for space in active:
+                for uid, info in _search_rows(conn, space, probes).items():
+                    text = info["v"] or ""
+                    probe = next((p for p in probes if p.casefold() in text.casefold()), "")
+                    hits[(space, uid)] = {
+                        "space": space,
+                        "id": uid,
+                        "name": info["n"] or "",
+                        "context": _window(text, probe, context) if probe else "",
+                    }
+            cache["hits"] = sorted(hits.values(), key=lambda h: (h["space"], h["id"]))
+        return cache["hits"]
+
+    def fetch(window):
+        if window is _FULL:
+            lim = None
+        elif window is _DEFAULT:
+            lim = 50
+        else:
+            lim = window
+        page = ordered() if lim is None else ordered()[:lim]
+        return page, len(page)
+
+    def count_total():
+        all_hits = ordered()
+        lim = args.get("limit")
+        lim = 50 if lim is None else lim
+        return len(all_hits[:lim]), len(all_hits)
+
+    return _read_surface(args, fetch, count_total,
+                         lambda p: {"hits": p}, ndjson_records=True)
 
 
 _LIST_SPACES = ("chain", "intention", "open_item", "ruling", "term", "log", "deflected_write")
@@ -1190,26 +1420,26 @@ def _h_list(conn, args):
     if not isinstance(filt, dict):
         raise VerbError("validation_failed", "filter must be an object")
     include_blades = bool(args.get("include_blades", False))
-    limit = _check_int(args.get("limit", 50), "limit", 1)
     offset = _check_int(args.get("offset", 0), "offset", 0)
     ignored = sorted(k for k in filt if k not in _LIST_APPLICABLE[space])
 
-    items = []
+    where_parts = ["1=1"]
+    params = []
     if space == "chain":
-        sql = "SELECT h.* FROM chain_headers h WHERE 1=1"
-        params = []
+        select = "SELECT h.* FROM chain_headers h WHERE "
+        from_where = "FROM chain_headers h WHERE "
+        order = "ORDER BY h.created, h.id"
         if "intention" in filt:
-            sql += (
-                " AND EXISTS (SELECT 1 FROM chain_intention_map m "
+            where_parts.append(
+                "EXISTS (SELECT 1 FROM chain_intention_map m "
                 "JOIN chain_intentions s ON s.id = m.intention_id "
-                "WHERE m.chain_id = h.id AND s.name = ?)"
-            )
+                "WHERE m.chain_id = h.id AND s.name = ?)")
             params.append(filt["intention"])
         if "name_prefix" in filt:
-            sql += " AND lower(h.name) LIKE lower(?) ESCAPE '\\'"
+            where_parts.append("lower(h.name) LIKE lower(?) ESCAPE '\\'")
             params.append(_like_escaped(str(filt["name_prefix"])) + "%")
-        sql += " ORDER BY h.created, h.id LIMIT ? OFFSET ?"
-        for r in conn.execute(sql, (*params, limit, offset)):
+
+        def render(r):
             rec = _bare(r)
             rec["intentions"] = _intention_names(conn, r["id"])
             if include_blades:
@@ -1217,63 +1447,92 @@ def _h_list(conn, args):
                     {"id": b["id"], "pos": b["pos"], "text": b["text"]}
                     for b in _ordered_blades(conn, r["id"])
                 ]
-            items.append(rec)
+            return rec
     elif space in ("intention", "open_item", "ruling"):
         table = {"intention": "chain_intentions", "open_item": "open_items", "ruling": "rulings"}[space]
-        sql = f"SELECT * FROM {table} WHERE 1=1"
-        params = []
+        select = f"SELECT * FROM {table} WHERE "
+        from_where = f"FROM {table} WHERE "
+        order = "ORDER BY created, id"
         if space == "intention" and "orientation" in filt:
-            sql += " AND orientation = ?"
+            where_parts.append("orientation = ?")
             params.append(filt["orientation"])
         if "state" in filt and space != "intention":
-            sql += " AND state = ?"
+            where_parts.append("state = ?")
             params.append(filt["state"])
         if "name_prefix" in filt:
-            sql += " AND lower(name) LIKE lower(?) ESCAPE '\\'"
+            where_parts.append("lower(name) LIKE lower(?) ESCAPE '\\'")
             params.append(_like_escaped(str(filt["name_prefix"])) + "%")
-        sql += " ORDER BY created, id LIMIT ? OFFSET ?"
-        items = [_bare(r) for r in conn.execute(sql, (*params, limit, offset))]
+        render = _bare
     elif space == "term":
-        sql = "SELECT * FROM terms WHERE 1=1"
-        params = []
+        select = "SELECT * FROM terms WHERE "
+        from_where = "FROM terms WHERE "
+        order = "ORDER BY created, id"
         if "name_prefix" in filt:
-            sql += " AND lower(term) LIKE lower(?) ESCAPE '\\'"
+            where_parts.append("lower(term) LIKE lower(?) ESCAPE '\\'")
             params.append(_like_escaped(str(filt["name_prefix"])) + "%")
-        sql += " ORDER BY created, id LIMIT ? OFFSET ?"
-        items = [_bare(r) for r in conn.execute(sql, (*params, limit, offset))]
+        render = _bare
     elif space == "deflected_write":
-        sql = "SELECT * FROM deflected_writes WHERE 1=1"
-        params = []
+        select = "SELECT * FROM deflected_writes WHERE "
+        from_where = "FROM deflected_writes WHERE "
+        order = "ORDER BY id"
         if "state" in filt:
-            sql += " AND state = ?"
+            where_parts.append("state = ?")
             params.append(filt["state"])
         if "since" in filt:
-            sql += " AND created >= ?"
+            where_parts.append("created >= ?")
             params.append(_iso_ns(filt["since"], "since"))
         if "until" in filt:
-            sql += " AND created <= ?"
+            where_parts.append("created <= ?")
             params.append(_iso_ns(filt["until"], "until"))
-        sql += " ORDER BY id LIMIT ? OFFSET ?"
-        items = [_deflected_record(r) for r in conn.execute(sql, (*params, limit, offset))]
+        render = _deflected_record
     else:  # log
-        sql = "SELECT DISTINCT l.* FROM logs l WHERE 1=1"
-        params = []
+        select = "SELECT DISTINCT l.* FROM logs l WHERE "
+        from_where = "FROM logs l WHERE "
+        order = "ORDER BY l.id"
         if "uuid" in filt:
-            sql += " AND EXISTS (SELECT 1 FROM log_refs lr WHERE lr.log_id = l.id AND lr.uuid = ?)"
+            where_parts.append(
+                "EXISTS (SELECT 1 FROM log_refs lr WHERE lr.log_id = l.id AND lr.uuid = ?)")
             params.append(filt["uuid"])
         if "since" in filt:
-            sql += " AND l.created >= ?"
+            where_parts.append("l.created >= ?")
             params.append(_iso_ns(filt["since"], "since"))
         if "until" in filt:
-            sql += " AND l.created <= ?"
+            where_parts.append("l.created <= ?")
             params.append(_iso_ns(filt["until"], "until"))
-        sql += " ORDER BY l.id LIMIT ? OFFSET ?"
-        items = [_bare(r) for r in conn.execute(sql, (*params, limit, offset))]
+        render = _bare
 
-    result = {"items": items, "count": len(items)}
-    if ignored:
-        result["warning"] = f"filter keys inapplicable to space '{space}' ignored: {', '.join(ignored)}"
-    return result
+    where_sql = " AND ".join(where_parts)
+
+    def fetch(window):
+        if window is _FULL:
+            lim = None
+        elif window is _DEFAULT:
+            lim = 50
+        else:
+            lim = window
+        sql = select + where_sql + " " + order
+        ps = list(params)
+        if lim is not None:
+            sql += " LIMIT ? OFFSET ?"
+            ps.extend((lim, offset))
+        items = [render(r) for r in conn.execute(sql, ps)]
+        return items, len(items)
+
+    def wrap(records):
+        out = {"items": records, "count": len(records)}
+        if ignored:
+            out["warning"] = (f"filter keys inapplicable to space "
+                              f"'{space}' ignored: {', '.join(ignored)}")
+        return out
+
+    def count_total():
+        total = conn.execute(
+            "SELECT COUNT(*) c " + from_where + where_sql, params).fetchone()["c"]
+        lim = args.get("limit")
+        lim = 50 if lim is None else lim
+        return min(lim, max(0, total - offset)), total
+
+    return _read_surface(args, fetch, count_total, wrap, ndjson_records=True)
 
 
 def _h_reblades_of(conn, args):
@@ -1309,7 +1568,16 @@ def _h_reblades_of(conn, args):
         e["dst_space"] = d["space"] if d else None
         e["dst_name"] = d["name"] if d else None
         edges.append(e)
-    return {"edges": edges}
+
+    def fetch(window):
+        return edges, len(edges)
+
+    def count_total():
+        # no limit today, so count = total
+        return len(edges), len(edges)
+
+    return _read_surface(args, fetch, count_total,
+                         lambda p: {"edges": p}, ndjson_records=True)
 
 
 def _neighbors(conn, u, direction, kinds):
@@ -1378,27 +1646,144 @@ def _h_follow(conn, args):
                     nodes.append(_node(v, depth, ek))
                     nxt.append(v)
         frontier = nxt
-    return {"nodes": nodes}
+
+    def fetch(window):
+        return nodes, len(nodes)
+
+    def count_total():
+        # no window today, so count = total
+        return len(nodes), len(nodes)
+
+    return _read_surface(args, fetch, count_total,
+                         lambda p: {"nodes": p}, ndjson_records=True)
 
 
 def _h_history(conn, args):
+    """history (SPEC 3.17): the full {genesis, revisions, trace} shape.
+
+    genesis = the sidecar's one-row birth frame (or null for a pre-build
+    vambrace; a frame, present even for dissolved entities, and never
+    counted by count / total). revisions = the limit-governed page of
+    field rows (default 20), newest first, each joined with its log's
+    resolved op + title; orphan rows (a log_id that no longer resolves)
+    are excluded by the inner join. trace = the FULL log rows (op, title,
+    created, body, refs) touching the UUID via log_refs: the same time
+    window as the revisions page when the page is non-empty, else default
+    20 -- a log row with no revisions in the window is a trace-only entry
+    (a gap). No live state in the response.
+
+    Bare-connection degradation (P4): with the sidecar not attached,
+    genesis is null and revisions empty, and the trace is the plain
+    log_refs query."""
     uid = args.get("id")
     if not isinstance(uid, str) or not uid:
         raise VerbError("validation_failed", "id is required")
-    limit = _check_int(args.get("limit", 20), "limit", 1)
-    rows = conn.execute(
-        "SELECT l.id AS log_id, lr.op AS op, l.title AS title, l.created AS created "
-        "FROM log_refs lr JOIN logs l ON l.id = lr.log_id "
-        "WHERE lr.uuid = ? ORDER BY l.id DESC LIMIT ?",
-        (uid, limit),
-    ).fetchall()
-    return {
-        "entries": [
-            {"log_id": r["log_id"], "op": r["op"], "title": r["title"], "created": ns_to_iso(r["created"])}
-            for r in rows
-        ],
-        "trace_level": "coarse",
-    }
+    attached = _hist_attached(conn)
+    if attached:
+        g = conn.execute(
+            "SELECT kind, detail, log_id, created FROM hist.genesis "
+            "ORDER BY created LIMIT 1").fetchone()
+        genesis = None if g is None else {
+            "kind": g["kind"],
+            "detail": g["detail"],
+            "log_id": g["log_id"],
+            "created": ns_to_iso(g["created"]),
+        }
+    else:
+        genesis = None
+
+    def _revisions(limit):
+        if not attached:
+            return []
+        sql = (
+            "SELECT r.field AS field, r.old_val AS old, r.new_val AS new, "
+            "r.created AS created, lr.op AS op, l.title AS title "
+            "FROM hist.revisions r "
+            "JOIN logs l ON l.id = r.log_id "
+            "JOIN log_refs lr ON lr.log_id = l.id AND lr.uuid = r.uuid "
+            "WHERE r.uuid = ? ORDER BY r.created DESC, r.id DESC")
+        ps = [uid]
+        if limit is not None:
+            sql += " LIMIT ?"
+            ps.append(limit)
+        return conn.execute(sql, ps).fetchall()
+
+    def _trace(rows):
+        if rows:
+            lo = min(r["created"] for r in rows)
+            hi = max(r["created"] for r in rows)
+            trows = conn.execute(
+                "SELECT l.id AS id, l.title AS title, l.created AS created, "
+                "l.body AS body, lr.op AS op "
+                "FROM log_refs lr JOIN logs l ON l.id = lr.log_id "
+                "WHERE lr.uuid = ? AND l.created BETWEEN ? AND ? "
+                "ORDER BY l.id DESC",
+                (uid, lo, hi)).fetchall()
+        else:
+            trows = conn.execute(
+                "SELECT l.id AS id, l.title AS title, l.created AS created, "
+                "l.body AS body, lr.op AS op "
+                "FROM log_refs lr JOIN logs l ON l.id = lr.log_id "
+                "WHERE lr.uuid = ? ORDER BY l.id DESC LIMIT 20",
+                (uid,)).fetchall()
+        trace = []
+        for r in trows:
+            refs = [
+                {"uuid": x["uuid"], "op": x["op"]}
+                for x in conn.execute(
+                    "SELECT uuid, op FROM log_refs WHERE log_id = ? ORDER BY uuid",
+                    (r["id"],))
+            ]
+            trace.append({
+                "op": r["op"],
+                "title": r["title"],
+                "created": ns_to_iso(r["created"]),
+                "body": r["body"],
+                "refs": refs,
+            })
+        return trace
+
+    def fetch(window):
+        if window is _FULL:
+            lim = None
+        elif window is _DEFAULT:
+            lim = 20
+        else:
+            lim = window
+        rows = _revisions(lim)
+        payload = {
+            "genesis": genesis,
+            "revisions": [
+                {
+                    "field": r["field"],
+                    "old": r["old"],
+                    "new": r["new"],
+                    "created": ns_to_iso(r["created"]),
+                    "op": r["op"],
+                    "title": r["title"],
+                }
+                for r in rows
+            ],
+            "trace": _trace(rows),
+        }
+        return payload, len(rows)
+
+    def count_total():
+        lim = args.get("limit")
+        lim = 20 if lim is None else lim
+        rows = _revisions(lim)
+        total = (
+            conn.execute(
+                "SELECT COUNT(*) c FROM hist.revisions r "
+                "JOIN logs l ON l.id = r.log_id "
+                "JOIN log_refs lr ON lr.log_id = l.id AND lr.uuid = r.uuid "
+                "WHERE r.uuid = ?",
+                (uid,)).fetchone()["c"]
+            if attached else 0)
+        return len(rows), total
+
+    return _read_surface(args, fetch, count_total, lambda p: p,
+                         ndjson_records=False)
 
 
 # ---------------------------------------------------------- deflected writes

@@ -357,14 +357,17 @@ class Follow(QatenaTestCase):
 
 
 class History(QatenaTestCase):
-    def test_coarse_newest_first(self):
+    def test_full_rows_newest_first(self):
         cid = self.verb("chain_put", name="Alpha")["id"]
         self.verb("chain_put", id=cid, name="Beta")  # rename
         res = self.verb("history", id=cid)
-        self.assertEqual(res["trace_level"], "coarse")
-        self.assertEqual(len(res["entries"]), 2)
-        e0, e1 = res["entries"]
-        self.assertGreater(e0["log_id"], e1["log_id"])  # newest first
+        self.assertEqual(sorted(res), ["genesis", "revisions", "trace"])
+        self.assertEqual(len(res["trace"]), 2)
+        e0, e1 = res["trace"]
+        # newest first; same-millisecond writes render identical ISO stamps,
+        # so the strict ordering is pinned by the ops below (log id is not
+        # surfaced in the trace row shape)
+        self.assertGreaterEqual(e0["created"], e1["created"])
         self.assertEqual(e1["op"], "created")
         self.assertEqual(e0["op"], "modified")
         self.assertTrue(e0["title"].startswith("chain_put"))
@@ -375,8 +378,15 @@ class History(QatenaTestCase):
         self.verb("chain_put", id=cid, name="Beta")
         self.verb("chain_put", id=cid, name="Gamma")
         res = self.verb("history", id=cid, limit=2)
-        self.assertEqual(len(res["entries"]), 2)
-        self.assertEqual(res["entries"][0]["title"], 'chain_put "Gamma"')
-        self.assertEqual(self.verb("history", id=new_uuid7())["entries"], [])
-        self.assertEqual(self.verb("history", id=new_uuid7())["trace_level"],
-                         "coarse")
+        # bare-connection degradation: no sidecar attached, so nothing was
+        # minted -- genesis null, revisions empty; the trace still carries
+        # the FULL log rows for the uuid
+        self.assertEqual(res["revisions"], [])
+        self.assertIsNone(res["genesis"])
+        self.assertEqual(len(res["trace"]), 3)
+        self.assertEqual(res["trace"][0]["title"], 'chain_put "Gamma"')
+        self.assertEqual(res["trace"][0]["op"], "modified")
+        empty = self.verb("history", id=new_uuid7())
+        self.assertEqual(empty["revisions"], [])
+        self.assertEqual(empty["trace"], [])
+        self.assertIsNone(empty["genesis"])

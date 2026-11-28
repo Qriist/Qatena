@@ -234,3 +234,38 @@ def bootstrap(conn):
         conn.execute(stmt)
     _migrate_autoexport_registers(conn)
     _migrate_open_items_freeform(conn)
+
+
+# The per-vambrace history sidecar <key>.history.db (SPEC 3.17): a
+# separate SQLite file beside <key>.db, ATTACHed at every routed open so
+# a revision row and the write it record land or roll back in ONE
+# spanning BEGIN IMMEDIATE..COMMIT (SPEC 1.4). All-scalar, no JSON, no
+# reason column: the write's logs row joined by log_id is the "why".
+
+SIDECAR_STATEMENTS = [
+    """CREATE TABLE IF NOT EXISTS genesis (
+  kind    TEXT    NOT NULL CHECK (kind IN ('equip', 'acquire')),
+  detail  TEXT,               -- acquire: the mythos source path; equip: NULL
+  log_id  INTEGER,            -- acquire: the main db's genesis log row; equip: NULL
+  created INTEGER NOT NULL    -- Unix ns
+)""",
+    """CREATE TABLE IF NOT EXISTS revisions (
+  id      INTEGER PRIMARY KEY,  -- dense, append-only; never a reblade endpoint
+  uuid    TEXT(36) NOT NULL,    -- the entity the field belongs to
+  field   TEXT    NOT NULL,     -- the content field name ('intention' for membership)
+  old_val TEXT,                 -- NULL = absent before
+  new_val TEXT,                 -- NULL = absent after
+  log_id  INTEGER NOT NULL,     -- the write's logs row; joined, not duplicated
+  created INTEGER NOT NULL      -- Unix ns
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_revisions_uuid ON revisions (uuid, field, created)",
+]
+
+
+def bootstrap_sidecar(conn):
+    """Create the history sidecar schema on a fresh <key>.history.db;
+    no-op on an existing one. CREATE IF NOT EXISTS makes re-bootstrapping
+    idempotent, so pre-existing sidecars survive (mirroring bootstrap for
+    the main db)."""
+    for stmt in SIDECAR_STATEMENTS:
+        conn.execute(stmt)
