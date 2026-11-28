@@ -6,7 +6,7 @@ Resolutions the design left rough are marked **[resolution]** — the set of tho
 **Runtime:** Python 3, stdlib `sqlite3`, a single stdio MCP server process (goose extension).
 One database file per vambrace, created and owned by the server (§1.9, §3.18). The server is the **sole write
 surface**: no other process or tool may open any vambrace file for writes — the one sanctioned exception is
-the autoexport exporter child's single small per-export transaction (§3.18).
+the autoexport child process' single small per-export transaction (§3.18).
 
 ## 1. Conventions
 
@@ -57,8 +57,7 @@ Every write transaction mints, in the same transaction:
   (`referenced` = e.g. the endpoints of a new reblade row.)
 
 The settled verb surface has **no log-write verb**: the timeline is the mechanical trace of the
-system's own footprint. Agent-authored narrative log entries would be a 21st verb — open, not
-part of v1 (see §5).
+system's own footprint.
 
 ### 1.6 Auto-linking
 
@@ -275,7 +274,7 @@ CREATE TABLE terms (
 );
 ```
 
-**Freeform tracking (open_item contract — built).** `open_items` carries seven NULL-defaulted freeform tracking columns — `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER), `freeform_next` / `freeform_last` (TEXT), and `freeform_due` / `freeform_priority` (TEXT). The open_item write verb (SPEC §3.19) exposes seven OPTIONAL fields: `current` / `pending` / `total` / `next` / `last` / `due` / `priority` (omitting the `freeform_` prefix). The first five are common-use columns for different types of tasks where you need to track a quantity or key-based position — beats parsing the item body all the time for one value; `due` / `priority` sit outside that pattern but are core to an open item's tracking needs (user-directed addition). The item body (`text`) is likewise OPTIONAL — an open item may be a pure tracking row (name + state + freeform fields, no body): some items are massive descriptive bodies that track a single number, and with an optional body a single incremental freeform update never has to re-supply it. Contract shape (user-directed): **the minimum field set for a call on an existing item is `vambrace` + `action` + `id`** — the routing key, the operation, the target item. For a **mint**, `name` takes `id`'s place — the item does not exist yet, and the name is the creation key (`id` is minted); a mint whose name **already** resolves to an existing item is idempotent — it returns the full existing row, i.e. **all non-null fields** (NULL fields omitted, not zero-filled — user clarification: in the open_item context "full row" means the row as it actually is, so a sparse tracking row comes back sparse), with no clobber, no error; the mint's response **always** carries a created-vs-found marker (`created`: `true` on a fresh mint, `false` on a found one) — user-directed: it should always be there in the mint response (human-facing clarity; minting is low-frequency relative to other operations, so the field is not a token eater), while the optimized paths (id-addressed updates, reads) do not need it. Key-collision resolution (implementation): the marker and the row's `created` timestamp share the key `created` — on a name-addressed response the boolean marker takes the slot (the row's created timestamp is omitted there, recoverable via `get`); on an id-addressed response `created` renders as the ISO timestamp and no marker is present. A no-op put (nothing changed) mints its log row as any write but refs nothing (the log row carries no `log_refs` rows) and does not bump `updated`. A repeated name is a lookup, not a fault, on the human-driven surface. All other fields are OPTIONAL — `name` on an id-addressed call (a rename, as `chain_put` is), `state`, the body, and all seven freeform fields — presence-masked, as `chain_put` is; the layer fills the storage invariants (`state` defaults to `open` on creation). Addressing guard: a request arriving with a **missing or empty `name`** must first be checked against the supplied `id` — if the UUID resolves to an existing open item the request is an update of it; if it does not resolve the request is rejected (`not_found`). Consequence: creation always goes through a non-empty name; a nameless request can never mint a new item. The guard is a hard one, not a convention: `open_items` is the one space where the human drives things almost manually, and that surface must not get mangled by the agent. Surface shape (user-directed): the open_item write surface is a **single `action`-driven verb** (like `vambrace`), not a set of verbs — the load-bearing verb count is approaching the ~25 enabled-tools threshold where goose degrades, and the write operations fit one verb with an `action` enum — the settled action set is `put` + `delete` (user-directed: this is a largely freeform table, so the set is deliberately minimal; no separate rename action — id + name on `put` is the rename — and no state actions: `state` is a field). Reads stay on the generic `get` / `list` / `search` verbs (space `open_item`); the addressing guard above applies to the `put` action. No further additions planned: the remaining candidates are derivatives of the set (`done = total − pending`) or speculative. Batch exclusion (user-directed): `open_item` ops are deliberately **not** `batch` ops — freeform items are too easy to co-mangle by a bad prompt into a single all-or-nothing transaction; the human-driven surface stays one call per item.
+**Freeform tracking.** Seven NULL-defaulted freeform tracking columns (three INTEGER quantity, four TEXT) plus an optional body — a pure tracking row (name + state + freeform, no body) is valid. The write surface’s full contract — the seven fields, addressing, the `created` marker, the hard guard, batch exclusion — is settled in §3.19.
 
 ### Autoexport
 
@@ -958,8 +957,8 @@ deregister actions themselves are excluded). For each active register the server
 **stack signature** — a stable content-only hash over the ordered stack and the register's
 **reblade layer**: `(root uuid, root space, root name, fidelity mode)` + per chain `(uuid,
 name, sorted intention names, [(blade uuid, text)] in pos order)` + the sorted reblade rows —
-against the stored `last_sig`. On change, the exporter
-child (`python -m qatena.autoexport <vambrace> <root> <path> <format>`) is spawned detached; it
+against the stored `last_sig`. On change, the child process
+(`python -m qatena.autoexport <vambrace> <root> <path> <format>`) is spawned detached; it
 re-reads committed truth, renders the format, and atomically rewrites the file. Timestamps,
 logs, and intention orientation are excluded, so no-op upserts do not re-export — but a chain
 refiled into / out of a registered intention does (membership is content), and the chain's own
@@ -1027,7 +1026,7 @@ register row, log row, `log_refs`, or stored signature is written. `root` select
 - root = a live `intention` / `chain` / `blade` uuid — the stack export. `reblade_fidelity`
   here is the explicit reblade layer for this one render (default `out`) — there is
   **no presence-masking**: the register row is never consulted. The file lands via the same
-  atomic mechanism as the exporter child (shared `write_export`: temp + `os.replace`).
+  atomic mechanism as the child process (shared `write_export`: temp + `os.replace`).
   Response: `{root, root_space, emit_path, emit_format, reblade_fidelity,
   stack: {chains, blades}, exported: true, exported_at (iso)}` — deliberately **no
   `replaced`, no `log_id`** (nothing was registered, nothing was logged). Unresolvable root
@@ -1059,7 +1058,7 @@ formats except `exported_at`, the new key, and the acquired db's genesis log row
 **Export lifecycle (convention).** Re-exports are sig-gated: the file is rewritten only when
 the stack signature actually changed. Self-healing: any failed export (disk full, path lost,
 crash) leaves `last_sig` stale, so the next changed write re-triggers automatically — no queue,
-no retry bookkeeping. The exporter child is the one sanctioned exception to the sole-write
+no retry bookkeeping. The child process is the one sanctioned exception to the sole-write
 surface: it opens the vambrace **read-only** (first re-reading its own register row — absent,
 i.e. deregistered in flight, is a clean no-op: no file write, no log), then does exactly one
 small read-write transaction (store `last_sig` / `last_emitted`, mint the export log row —
@@ -1160,6 +1159,32 @@ waylaid key only).
 The write surface for the `open_item` space — the human-driven space where the agent is a
 caretaker. A single `action`-driven verb (as `vambrace` is): actions `put` | `delete`; any
 other action fails `validation_failed`.
+
+**Freeform tracking (open_item contract — built).** `open_items` carries seven NULL-defaulted
+freeform tracking columns, exposed by this verb as seven OPTIONAL fields with the
+`freeform_` prefix dropped. The item body (`text`) is likewise OPTIONAL — an open item may be
+a pure tracking row (name + state + freeform fields, no body).
+
+| field | type | kind |
+|---|---|---|
+| `current` / `pending` / `total` | INTEGER | quantity |
+| `next` / `last` | TEXT | key position |
+| `due` / `priority` | TEXT | label |
+
+The first five are the common quantity / key-position pattern — beats parsing the item body
+for one value; `due` / `priority` sit outside it but are core to an open item’s tracking.
+
+| rule | settled behavior |
+|---|---|
+| minimal call | `vambrace` + `action` + `id` on an existing item (routing key, operation, target); on a **mint** `name` takes `id`’s place — the name is the creation key, `id` is minted |
+| repeated name | idempotent: returns the full existing row — all non-null fields (NULLs omitted, not zero-filled; a sparse row comes back sparse) — no clobber, no error |
+| `created` marker | always on the name-addressed response (`true` fresh mint / `false` found); it takes the `created` key slot there, so the row’s created timestamp is omitted (recoverable via `get`); id-addressed responses render `created` as the ISO timestamp, no marker |
+| no-op put | mints its log row as any write but refs nothing; does not bump `updated` |
+| rename | `id` + a differing `name` on `put` (as `chain_put` is) |
+| presence-mask | `name`, `state`, body, all seven freeform — all OPTIONAL; `state` defaults to `open` on creation |
+| addressing guard | missing/empty `name` is checked against `id` first: resolvable → update of it; unresolvable → `not_found`. Creation always goes through a non-empty name — a nameless put can never mint. Hard guard, not a convention: this is the human-driven space, and it must not get mangled by the agent |
+| surface shape | one `action`-driven verb (`put` \| `delete`), not a set of verbs — the surface stays under the ~25 enabled-tools threshold where goose degrades; no separate rename or state actions (`state` is a field); reads stay on the generic `get` / `list` / `search` |
+| batch exclusion | `open_item` ops are deliberately **not** `batch` ops — freeform items are too easy to co-mangle by a bad prompt into one all-or-nothing transaction; the human-driven surface stays one call per item |
 
 `put` — create-or-update, **presence-masked** (only supplied fields change; an explicit
 `null` clears a stored field, an absent one leaves it unchanged). Addressing: `id` (uuid,

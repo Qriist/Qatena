@@ -107,7 +107,7 @@ server-controlled waylay dir; a three-step destroy) — the file location is the
   `verbs.py` (the 19 routed verbs), `schema.py` (DDL + seeded registers), `autolink.py`
   (auto-linking), `db.py` (connection + timestamp helpers), `armory.py` (the armory
   ledger, inventory, and saga management), `snapshot.py` (the mythos whole-vambrace
-  snapshot codec), `autoexport.py` (register rendering + the exporter child), `uuid7.py`,
+  snapshot codec), `autoexport.py` (register rendering + the child process), `uuid7.py`,
   `__main__.py`.
 - `tests/` — stdlib `unittest` suite (no third-party dependencies).
 - `SPEC.md` — the contract: conventions, DDL, the 20 tool schemas, error codes.

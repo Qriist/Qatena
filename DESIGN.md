@@ -146,7 +146,7 @@ actions themselves are excluded), each active register's **stack signature** is 
 against its stored `last_sig`. The signature is a stable content-only hash over the ordered
 stack and the register's reblade layer: `(root uuid, root space, root name, fidelity mode)`
 + per chain `(uuid, name, sorted intention names, [(blade uuid, text)] in pos order)` + the
-sorted reblade rows (SPEC 3.18). On change, a detached exporter child
+sorted reblade rows (SPEC 3.18). On change, a detached child process
 (`python -m qatena.autoexport <vambrace> <root> <path> <format>`) re-reads committed truth
 and re-lands the file with the exact furnish render — so the file is always the current
 truth while the tool return stays fast: change identification stays in the server process,
@@ -171,7 +171,7 @@ name is carried).
 
 Registration does a **synchronous first export** (the response reports the initial write);
 a failed first export keeps the register with `last_sig` NULL, so the next write to the
-vambrace re-exports. The exporter child opens the vambrace **read-only** (re-reading its own
+vambrace re-exports. The child process opens the vambrace **read-only** (re-reading its own
 register row first — absent, i.e. deregistered in flight, is a clean no-op: no file write,
 no log), then does exactly one small read-write transaction (store `last_sig` /
 `last_emitted` + mint the export log row, area `autoexport`) — the one sanctioned exception
