@@ -52,6 +52,9 @@ server-controlled waylay dir; a three-step destroy) — the file location is the
   probes across chains, blades, intentions, open items, rulings, terms, and logs in one call).
 - Context can also be followed instead of found: `follow` walks the reblade graph hop by hop
   from any note, so related material arrives through the connections you actually made.
+- Context can be protected at the edge of a summon: any read can be **counted** before
+  it is fetched (a window-honest how many would come back) or **spilled** to a file
+  (json/ndjson) — the result lands where it is needed, not in the agent's context.
 - The one current gap: time-based queries — summoning a slice by *when* it happened, not just
   *what* it is — are a pending feature.
 

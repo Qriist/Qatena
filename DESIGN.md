@@ -231,7 +231,7 @@ v1 kinds: `name-ref` (mentions by name; the kind auto-linking mints at write tim
 
 ## Revision tracking
 
-Placeholder surface only. A verb-level contract is reserved: field-level change history for any UUID entity (field, old → new, timestamp). The mechanism (audit tables, triggers) is deliberately deferred until there is something to build against; the design may assume write verbs leave an auditable trace. A coarse per-entity trace (which log touched which UUID, with an op code) is available via `logs` + `log_refs`; field-level old→new stays deferred.
+Settled, built this pass: every content write mints **revision rows** (field, old → new, timestamp) into a per-vambrace sidecar `<key>.history.db`, joined to the write's `logs` row — which is the why, one truth. `history` returns the revision rows with the entity's FULL log trace (op / title / created / body / refs), so field-level old→new and the coarse per-entity trace arrive in one response. Content fields only — blade `text`; chain `name` + intention membership (one row per name); open item fields; ruling / term fields when their write verbs land. Machine columns, moves, and reblades mint nothing; a no-op write mints nothing. Revision rows never cascade with the entity — a dissolved header stays recoverable via history. Mechanism, minting map, retention, response shape: SPEC §3.17.
 
 ## Verb surface (20 tools)
 
@@ -289,7 +289,15 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 - `list` — an entity space with filters (chains by intention, items by state, rulings by state, …)
 - `reblades_of` — incoming/outgoing edges for a UUID, filterable by `kind`
 - `follow` — multi-hop traversal with a `kind` filter
-- `history` — the reserved revision surface (contract now, mechanism deferred)
+- `history` — field-level old→new history for any UUID: revision rows (old→new per
+  content field, joined to their log's op + title) plus the FULL log trace
+  (SPEC §3.17)
+- All six take the optional **read-surface keys** (the section after §3.17) — agent
+  context protection: `count` returns a window-honest `{count, total}` instead of
+  the record set (a result counted before it is fetched); `emit_path` +
+  `emit_format` (`json` | `ndjson` only) spill the result set to a file instead
+  of the agent's context (bare payload, no envelope; read-only against the
+  armory; atomic temp + `os.replace`); `count` + `emit_path` together is rejected
 
 **Surface decisions**
 
@@ -308,7 +316,7 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 
 ## Open items
 
-- `history` mechanism (field-level audit; contract reserved).
+- `history` mechanism — settled, built this pass: the field-level old→new audit is SPEC §3.17 (per-vambrace sidecar `<key>.history.db`: `revisions` rows joined to the write's log row + a `genesis` frame at equip/acquire); the companion read-surface keys (`count` / `emit_path` / `emit_format`) on the six Reads-group verbs are the section after it.
 - UUID storage → `BLOB(16)` (finalizing step).
 - Seeding agent-specific intentions: the possibility of seeding the intention space with a few useful agent-specific entries (e.g. a designated agent-notes intention) so the notes-as-blades pattern is available from the start.
 - Autoexport root clarification (docs): state explicitly that `register_autoexport` / `furnish` may be rooted at any part of the stack — a live intention, a chain within it, or a single blade — with the exported stack extending downward from the root (currently only implicit: SPEC 3.18 names the validation rule, the DESIGN autoexport intro just says "rooted at a live UUID").

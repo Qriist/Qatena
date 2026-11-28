@@ -346,7 +346,7 @@ an idempotent upsert, not an error.
   "candidates": [ {"name": "…", "space": "chain", "token": "…"} ]   // auto-linking ops only
 }
 
-// reads: the record(s), plainly
+// reads: the record(s), plainly — or a {count, total} / emit receipt (read-surface keys, the section after §3.17)
 
 // failure (MCP isError = true):
 { "error": { "code": "duplicate_name", "message": "chain name 'The Forge' is taken (id 0192…)" } }
@@ -729,21 +729,160 @@ change. Renames and refiling are just this.
 
 ### 3.17 `history`
 
+Field-level old→new history for any UUID — the contract formerly reserved is now
+settled and built. Content writes mint **revision rows** into a per-vambrace
+**sidecar** `<key>.history.db` beside `<key>.db`; `history` returns them with the
+entity's full log trace, so one response carries both layers.
+
+**Storage — the sidecar.** The sidecar is `ATTACH`ed to the same connection at
+every routed open: the attached main db and the sidecar participate in ONE
+spanning `BEGIN IMMEDIATE`..`COMMIT` (§1.4), so a revision row and the write it
+records land or roll back together. WAL, as the main db. The only true limit is
+power loss / OS crash exactly mid-commit — there is deliberately no recovery
+machinery; Qatena is personal creative-project tooling, not business-grade ops.
+
+The sidecar is created **eagerly at birth**: `equip` and `acquire` seed it with a
+one-row **genesis record** (a vambrace-level frame — NOT a `revisions` row):
+`kind` (`equip` | `acquire`) · `detail` (acquire = the mythos source path;
+equip = null) · `log_id` (acquire = the main db's genesis log row, area
+`acquire`; equip = NULL — armory actions mint no db log rows) · `created`. A
+**pre-build vambrace** (sidecar missing at a routed open) gets the sidecar
+created and its schema bootstrapped **at open** with NO genesis row — the
+response's `genesis` is null; no false birth claim.
+
+```sql
+-- the sidecar <key>.history.db (attached beside the main db at every routed open)
+CREATE TABLE IF NOT EXISTS genesis (
+  kind    TEXT    NOT NULL CHECK (kind IN ('equip', 'acquire')),
+  detail  TEXT,               -- acquire: the mythos source path; equip: NULL
+  log_id  INTEGER,            -- acquire: the main db's genesis log row; equip: NULL
+  created INTEGER NOT NULL    -- Unix ns
+);
+
+CREATE TABLE IF NOT EXISTS revisions (
+  id      INTEGER PRIMARY KEY,  -- dense, append-only; never a reblade endpoint
+  uuid    TEXT(36) NOT NULL,    -- the entity the field belongs to
+  field   TEXT    NOT NULL,     -- the content field name ('intention' for membership)
+  old_val TEXT,                 -- NULL = absent before
+  new_val TEXT,                 -- NULL = absent after
+  log_id  INTEGER NOT NULL,     -- the write's logs row — the why; joined, not duplicated
+  created INTEGER NOT NULL      -- Unix ns
+);
+CREATE INDEX IF NOT EXISTS idx_revisions_uuid ON revisions (uuid, field, created);
+```
+
+All-scalar, no JSON. No `reason` column: the write's `logs` row (op / title /
+body, with `log_refs`) is the why — joined by `log_id`, one truth.
+
+**Minting — content fields only.** A write mints one `revisions` row per changed
+content field, `old_val` → `new_val` (NULL = absent):
+
+- **Blades** — field `text`: `blade_insert` NULL→v · `blade_edit` old→new (a
+  no-op write mints nothing — the old value is read first) · `blade_delete`
+  v→NULL.
+- **Chain headers** — field `name` (only when supplied and changed) + intention
+  membership as ONE row per name changed (field `intention`: added NULL→name,
+  removed name→NULL). `chain_put`: both. `chain_split`: ONLY the new header's
+  name NULL→name (moving blades is structural — nothing). `chain_delete`: the
+  header name v→NULL **and every blade's** text v→NULL — the rows survive the
+  entity (the forensic surface). `chain_merge`: ONLY the dissolved header's name
+  v→NULL (blades travel — nothing for them). An ordinary `chain_put` creation
+  DOES mint rows: a first appearance is a change; only the equip/acquire genesis
+  is special.
+- **Open items** — `open_item` `put`: `name` (a rename) · `state` (changed) ·
+  `text` (NULL→v, v→NULL, or changed) · each changed freeform column —
+  `freeform_current` / `freeform_pending` / `freeform_total` (INTEGER),
+  `freeform_next` / `freeform_last` / `freeform_due` / `freeform_priority`
+  (TEXT) — one row per changed column, `field` = the column name.
+  `open_item` `delete`: every non-null field → NULL.
+- **Rulings / terms** — `state` + `body` and `term` + `definition` respectively.
+  The tables exist (UUID ids) and `revisions` supports them; their write verbs
+  land later (§5) — nothing mints today.
+- **Nothing mints** — reblade rows (tuple-identified `PK(src, dst, kind)`, no
+  UUID anchor to name a row by; a note write is already covered by its `logs`
+  row + the trace) · machine columns (`created` / `updated`, ids,
+  `blade_order`) · moves and retargeting (structural) · failed / deflected
+  writes (history records what landed — the deflected cache is its own space,
+  §3.20).
+- **`batch`** — per-op rows as above; all rows of one batch share the batch's
+  single `log_id`.
+
+**Retention.** Revision rows never cascade with the entity: they survive
+`chain_delete`, `blade_delete`, and `chain_merge` dissolution. The contract's
+promise that a dissolved header is recoverable via history stands on this.
+
 ```json
 {
   "name": "history",
-  "description": "Reserved revision surface: contract now, mechanism deferred. Currently returns the coarse trace — log rows touching this UUID via log_refs, with op codes, titles, and timestamps, newest first. The field-level old→new history this contract carries is not yet implemented; clients may build against the contract shape.",
+  "description": "Field-level old→new history for a UUID. Returns {genesis, revisions, trace}: genesis = the vambrace's sidecar birth record, or null; revisions = limit-governed field rows (default 20), each joined with its log's resolved op + title, orphan rows (unresolvable log_id) excluded; trace = the FULL log rows (op, title, created, body, refs) touching the UUID via log_refs — the coarse trace deepened, same time window as the revisions page when revisions exist, else default 20. Carries no live state (current state is get's job); no include_live. The read-surface keys (count / emit_path / emit_format) apply — the section after this one.",
   "inputSchema": {
     "type": "object",
     "properties": {
       "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-      "limit": { "type": "integer", "minimum": 1, "description": "Default 20." }
+      "limit": { "type": "integer", "minimum": 1, "description": "Default 20." },
+      "count": { "type": "boolean", "description": "Optional. When present, the response is {count, total} instead of {genesis, revisions, trace}: count = revision rows in the window (the genesis frame is never counted), total = unwindowed. Read-surface keys — the section after this one." },
+      "emit_path": { "type": "string", "minLength": 1, "description": "Optional. Emit the result set to this file instead of returning it (parent directory must exist; atomic temp + os.replace); read-only against the armory — no log row, no signature, no register, no vambrace mutation. Not with count. Read-surface keys — the section after this one." },
+      "emit_format": { "type": "string", "enum": ["json", "ndjson"], "description": "With emit_path: json | ndjson only (md/csv stay with furnish stack renders); the emitted file is the bare payload — no envelope, no exported_at. Read-surface keys — the section after this one." }
     },
     "required": ["vambrace", "id"]
   }
 }
 ```
+
+**Response shape** — `{genesis, revisions, trace}`:
+
+- `genesis` — the sidecar's one-row genesis record (the vambrace's birth) or `null`
+  (a pre-build vambrace). A frame: present even for dissolved entities, and never
+  counted by `count` / `total`.
+- `revisions` — the limit-governed page of field rows (default 20; `limit` as in
+  the schema): `field`, `old`, `new`, `created`, plus the JOINED log's resolved
+  `op` + `title` (no log body duplication). Orphan rows (a `log_id` that no longer
+  resolves) are excluded.
+- `trace` — the coarse trace deepened to FULL log rows: `op`, `title`, `created`,
+  `body`, `refs` — every log row touching the UUID via `log_refs`. Same time window
+  as the revisions page when revisions exist; else default 20, as before. A log row
+  with no revisions in the window is a **trace-only entry** (a gap) — pointers
+  always resolve within one response.
+
+No live state in the response: current state is `get`'s single plane, and this
+shape carries no `include_live`.
+
+**Log access.** Logs stay system-minted with dense integer ids (§1.1): `history`'s
+trace is the deepened per-entity read; `list` (space `log`) stays the vault-wide
+audit, unchanged; `search` probes log titles/bodies, unchanged. There is NO `get`
+for logs — `logs.id` stays a dense integer join key, not an address. No new verbs:
+the tool surface stays 20.
+
+### Read-surface keys (`count` / `emit_path` / `emit_format`)
+
+All SIX read verbs (`get`, `search`, `list`, `reblades_of`, `follow`, `history` —
+the Reads group; `inventory` is a key-less `vambrace` action and OUT of scope)
+gain two optional keys. Agent context protection: a result can be counted before
+it is fetched, or spilled to a file instead of the agent's context. No new verbs —
+the tool surface stays 20.
+
+- **`count`** (optional). When present, the response carries `count` + `total`
+  **instead of the record set**. `count` is window-honest — "would have shown
+  up", including limit / offset / window effects; `total` is the unwindowed
+  count. Per verb: `list` = rows in the window · `search` = hits in the window ·
+  `follow` = visited nodes · `reblades_of` = edges (no limit today, so `count`
+  is a total) · `history` = revision rows (the genesis frame is never counted) ·
+  `get` = response size — a chain composite → its blade count, a bare record → 1,
+  an unresolved UUID → 0 (and for `get`, `total` = `count`).
+- **`emit_path`** + **`emit_format`** (optional, together). Emit the result set
+  to a file **instead of the agent**: `emit_path` is used exactly as given (the
+  parent directory must exist), and `emit_format` allows ONLY `json` | `ndjson`
+  — md/csv stay with furnish stack renders. The emitted file is the **bare
+  payload**: no envelope, no `exported_at`, no wrapper — provenance lives in the
+  tool response. Omitted `limit` on the emit branch = the full result set; an
+  explicit `limit` caps it. The write is atomic (temp file + `os.replace`) and
+  read-only against the armory: no log row, no signature, no register, no
+  vambrace mutation. Response: `{emitted, emit_path, emit_format, count, bytes,
+  truncated}` — `count` = records emitted, `bytes` = the emitted file size,
+  `truncated` = whether the set was cut by an explicit limit.
+- **`count` + `emit_path` together = `validation_failed`** — a record set and a
+  count are mutually exclusive, and the emit receipt already carries `count`.
 
 ### 3.18 `vambrace`
 
@@ -1166,7 +1305,7 @@ re-validated against the current state).
 ## 5. Open items
 
 1. **UUID storage → `BLOB(16)`** — the project's finalizing step (storage-only; tool surface unchanged).
-2. **`history` mechanism** — field-level old→new audit (tables/triggers), contract reserved.
+2. **`history` mechanism** — settled + built: the field-level old→new audit lives in the per-vambrace sidecar `<key>.history.db` (`revisions` rows joined to the write's `logs` row, which is the why; a `genesis` frame at equip/acquire) — mechanism, minting map, retention, response shape: §3.17 (in-verb minting, not triggers; a no-op write mints nothing). The companion read-surface keys (`count` / `emit_path` / `emit_format`) on the six read verbs: the section after §3.17.
 3. **Agent-authored entries** — pattern resolved (decisions-as-blades under a designated intention — not a verb, not a `vambrace` action); open: the possibility of seeding the intention space with a few useful agent-specific entries (e.g. a designated agent-notes intention). v1's `logs` are system-minted only.
 4. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale.
 5. **`SPEC.md` resolutions (a)–(f) pending review** — reblades carry no UUID (§1.7) · `reblade_kinds` register (§2) · intentions upserted via `chain_put.intentions` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
