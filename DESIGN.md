@@ -224,3 +224,4 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 - `history` mechanism (field-level audit; contract reserved).
 - UUID storage → `BLOB(16)` (finalizing step).
 - Agent-authored log entries (a 21st-verb candidate now — the 20th went to `deflected_write` in `bcdc70c`) — open.
+- Autoexport root clarification (docs): state explicitly that `register_autoexport` / `furnish` may be rooted at any part of the stack — a live intention, a chain within it, or a single blade — with the exported stack extending downward from the root (currently only implicit: SPEC 3.18 names the validation rule, the DESIGN autoexport intro just says "rooted at a live UUID").
