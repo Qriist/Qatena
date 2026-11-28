@@ -82,7 +82,8 @@ system's own footprint.
 - `reblades.src_uuid` / `dst_uuid` are validated **by the server**, not by foreign keys —
   the endpoint space is polymorphic.
 - Reblades carry **no UUID of their own**; identity is `(src_uuid, dst_uuid, kind)`
-  **[resolution a]** — consistent with the settled endpoint enumeration.
+  **[resolution a]** — the edge is a relationship between UUIDs, and the triple fully determines it:
+  a self-UUID would carry no identifying content of its own, an indirection onto the very triple that finds it.
 - Deleting a chain or blade cascade-deletes its **outgoing** reblades and **reports** incoming
   ones in the response (they may still be meaningful; retarget or remove explicitly).
 - `chain_merge` retargets reblades aimed at the dissolved header onto the survivor; the
