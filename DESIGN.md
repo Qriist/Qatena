@@ -60,44 +60,114 @@ location IS the state: the armory top level (LIVE, routable) and the `<armory>/w
   well-formed key with no file → `unknown_vambrace`. The server never silently creates or
   falls back.
 
+## Furnish
+
+The `furnish` vambrace action renders an export to a file immediately — the one-shot path:
+one call, one file, no bookkeeping. The vambrace is opened **read-only**: no register row,
+no log row, no stored signature is written, and the file lands atomically (temp file +
+`os.replace`). `root` selects the scope: a live stack root, or the literal `mythos`.
+
+**The stack.** A stack is the downward closure of a live root over intention → chain →
+blade — a one-shot or a register may be rooted at any part of it:
+
+- root = **intention** — the intention + every member chain + every blade of those chains
+- root = **chain** — the chain + its blades (in `blade_order`)
+- root = **blade** — the blade itself (a leaf; its parent chain appears in the `md` output
+  as presentation context only)
+
+Four codecs render the same stack: `md` (human), `csv` (flat), `json` and `ndjson`
+(machine).
+
+**The reblade layer.** An optional `reblade_fidelity` (`none` | `in` | `out` | `both`,
+default `out`) selects which reblade rows the file carries, against the stack's **endpoint
+set** `E` = the root UUID + every chain UUID + every blade UUID in the stack. Rows are
+carried as **dead identifiers** — `{src, dst, kind}` + `note` when present — fetched in one
+query over `reblades`; endpoints are never resolved or traversed, so no mode can pull
+referenced content into the export: every export is bounded and non-recursive by
+construction.
+
+- `none` — no reblade rows
+- `out` — rows with `src` in E (the stack's outbound references) — the default
+- `in` — rows with `dst` in E (backlinks: outside → inside)
+- `both` — rows with either endpoint in E
+
+Each row appears exactly once, sorted by `(src, dst, kind, note)`. Per format: `json` gains
+top-level `reblade_fidelity` + `reblades`; `ndjson` appends `{"space": "reblade", "src",
+"dst", "kind"(, "note")}` lines after the entity lines; `csv` is
+`space,uuid,name,src,dst,kind,pos,text,note` (reblade rows leave `uuid`/`name` blank); `md`
+renders outgoing rows as `<!-- kind -> dst -->` comment lines under the owning entity (plus
+`<!-- note: ... -->`), and `in` / `both` add a trailing `## Inbound` block of
+`- src [kind] -> dst` rows — in `both`, a row with both endpoints inside the stack renders
+exactly once (under its `src` owner), never duplicated into the block. Liveness caveat: the
+file carries reblade identifiers, not endpoint liveness — a deleted external endpoint leaves
+its UUID in the file until the reblade row itself changes.
+
+**The mythos root.** `root` may instead be the literal `mythos`: the whole-vambrace
+snapshot, payload `{exported_at, key, saga?, spaces: {chains, blades, reblades, intentions,
+open_items, rulings, terms, logs}}` — all eight entity spaces in the bare-record vocabulary
+(NULLs omitted), plus the meta: the `key` is the source vambrace's key (provenance, not
+identity — `acquire` mints a new one) and the `saga` from meta (omitted when unset).
+Excluded by design: `deflected_writes` (declared memory, not truth) and
+`autoexport_registers` (machine-local config; an acquired vambrace starts with none). One
+codec, two directions: the same `md` / `csv` / `json` / `ndjson` render serves `furnish`
+(root = `'mythos'`) out and `acquire` in; a mythos round-trip is identical in all four
+formats except `exported_at`, the new key, and the acquired db's genesis log row.
+`reblade_fidelity` is inapplicable to mythos (the whole db is the scope) and is rejected if
+supplied.
+
+Autoexport (below) is this same render, kept current by the server.
+
 ## Autoexport
 
-A register names a **stack** (intention → chain → blade, rooted at a live UUID) and a
-destination file + format (md / csv / json / ndjson). After every committed write, one hook
-compares each register's **content-only stack signature** against its stored signature; on
-change a detached exporter child (`python -m qatena.autoexport`) re-reads committed truth and
-atomically rewrites the file — so the file is always the current truth while the tool return
-stays fast: change identification stays in the server process, file writing in the side
-process.
+Autoexport builds on furnish: a **register** names the same furnish export — a stack root,
+a destination file, a format, a reblade layer — plus a stored signature, and the server
+keeps the file current instead of rendering once.
 
-**One-shot furnish.** The `furnish` vambrace action renders a stack to a file immediately
-without any register machinery: read-only against the vambrace, no register row, no log, no
-stored signature (SPEC 3.18) — same render, same reblade layer, no bookkeeping. The root may
-also be the literal `mythos` — the whole-vambrace snapshot (all eight spaces + meta), the
-codec `acquire` imports.
+After every committed write (one post-commit check in the server's routed write path;
+`batch` = one check for the whole transaction; read verbs and the register / deregister
+actions themselves are excluded), each active register's **stack signature** is compared
+against its stored `last_sig`. The signature is a stable content-only hash over the ordered
+stack and the register's reblade layer: `(root uuid, root space, root name, fidelity mode)`
++ per chain `(uuid, name, sorted intention names, [(blade uuid, text)] in pos order)` + the
+sorted reblade rows (SPEC 3.18). On change, a detached exporter child
+(`python -m qatena.autoexport <vambrace> <root> <path> <format>`) re-reads committed truth
+and re-lands the file with the exact furnish render — so the file is always the current
+truth while the tool return stays fast: change identification stays in the server process,
+file writing in the side process.
 
 **Why signature-diff** (rather than extending the per-write transaction footprint): the
 footprint would need every write handler to record every structurally-relevant UUID —
 membership changes, blade re-parenting, membership unions in merges — fragile by
-construction. A bounded read of the stack is *provably* correct for "did the stack change, in
-any way" and costs nothing measurable at this scale. Timestamps are excluded, so no-op
-upserts don't re-export; membership changes do (membership is content).
+construction. A bounded read of the stack is *provably* correct for "did the stack change,
+in any way" and costs nothing measurable at this scale. Timestamps, logs, and intention
+orientation are excluded, so no-op upserts don't re-export — but a chain refiled into / out
+of a registered intention does (membership is content), and the chain's own register
+re-exports too (its intention list is in its signature). A blade root's stack is
+`(uuid, text)` only, so moving a registered blade between chains does not re-export it (a
+move changes no reblade row).
 
-**Reblade fidelity.** The reblade layer is a registerable field per export:
-`reblade_fidelity` (`none` | `in` | `out` | `both`, default `out`) selects which reblade rows
-the file carries — rows with `src` inside the stack (`out`), rows entering it (`in`,
-backlinks), either (`both`), or none. Rows are dead `{src, dst, kind}` identifiers, never
-resolved: no mode can pull referenced content into the export, so nothing is recursive or
-combinatorial in any mode. The mode is signed into the stack signature, so changing it
-re-exports, and a reblade write re-exports exactly the registers whose mode includes the
-row's direction.
+**The fidelity mode is signed.** Changing the register's `reblade_fidelity` re-exports, and
+a reblade write re-exports exactly the registers whose mode includes the row's direction —
+an outside → inside write never re-exports an `out` register; an inside → outside write
+never re-exports an `in` one. Renaming an external endpoint re-exports nothing (no endpoint
+name is carried).
 
-The exporter child opens the vambrace read-only and then does exactly one small read-write
-transaction (store `last_sig`/`last_emitted` + mint the export log row) — the one sanctioned
-exception to the server-as-sole-write-surface rule. A failed export leaves the signature
-stale, so the next changed write re-triggers: self-healing with no queue or retry
-bookkeeping. Exported files are never deleted by the server; deleting a registered root
-cascade-deletes its registers.
+Registration does a **synchronous first export** (the response reports the initial write);
+a failed first export keeps the register with `last_sig` NULL, so the next write to the
+vambrace re-exports. The exporter child opens the vambrace **read-only** (re-reading its own
+register row first — absent, i.e. deregistered in flight, is a clean no-op: no file write,
+no log), then does exactly one small read-write transaction (store `last_sig` /
+`last_emitted` + mint the export log row, area `autoexport`) — the one sanctioned exception
+to the server-as-sole-write-surface rule. A failed export leaves the signature stale, so the
+next changed write re-triggers: self-healing with no queue or retry bookkeeping.
+
+**Lifecycle.** Upsert on identity `(root, emit_path)`: re-registering the same root + path
+with a different format or fidelity REPLACES it; fidelity is presence-masked (omitted at
+creation → `out`, omitted on re-register → keep the stored value). Deregister removes the
+register row only — **the exported file is left on disk**; the server never deletes user
+files. Deleting a registered root (`chain_delete` / `blade_delete`) cascade-deletes its
+register rows in the same transaction — a dead root can never re-trigger, and UUIDs are
+never reused.
 
 ## Data model
 
