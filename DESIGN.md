@@ -68,7 +68,7 @@ no log row, no stored signature is written, and the file lands atomically (temp 
 `os.replace`). `root` selects the scope: a live stack root, or the literal `mythos`.
 
 **The stack.** A stack is the downward closure of a live root over intention → chain →
-blade — a one-shot or a register may be rooted at any part of it:
+blade:
 
 - root = **intention** — the intention + every member chain + every blade of those chains
 - root = **chain** — the chain + its blades (in `blade_order`)
