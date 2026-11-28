@@ -1167,7 +1167,7 @@ re-validated against the current state).
 
 1. **UUID storage → `BLOB(16)`** — the project's finalizing step (storage-only; tool surface unchanged).
 2. **`history` mechanism** — field-level old→new audit (tables/triggers), contract reserved.
-3. **Agent-authored log entries** — a 21st verb, if wanted; v1's `logs` are system-minted only.
+3. **Agent-authored log entries** — top-level "literally whole project" narrative only (the `vambrace` layer; scope-regularity per the retracted `deflected_write` subsumption — a row-scoped 21st verb is out); v1's `logs` are system-minted only.
 4. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale.
 5. **`SPEC.md` resolutions (a)–(f) pending review** — reblades carry no UUID (§1.7) · `reblade_kinds` register (§2) · intentions upserted via `chain_put.intentions` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
 6. **`vambrace` actions beyond `equip`** — list / destroy / label, etc.; deliberately deferred until the project is close to finalizing. (`register_autoexport` / `deregister_autoexport` are built, §3.18.)
