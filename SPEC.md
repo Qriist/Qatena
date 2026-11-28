@@ -181,7 +181,8 @@ CREATE TABLE reblade_kinds (                        -- seeded register, extensib
   kind TEXT NOT NULL PRIMARY KEY
 );
 INSERT INTO reblade_kinds (kind) VALUES
-  ('name-ref'), ('supersedes'), ('part-of'), ('source'), ('see');
+  ('name-ref'), ('supersedes'), ('part-of'), ('source'), ('see'),
+  ('conflict'), ('depends-on');
 
 CREATE TABLE reblades (
   src_uuid TEXT(36) NOT NULL,   -- endpoint, validated server-side (polymorphic)
@@ -332,7 +333,7 @@ open) applies it to whatever db files are present — no separate migration code
 - **uuid** — `string`, canonical hyphenated UUIDv7;
   pattern `^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`
 - **iso** — `string`, ISO-8601 UTC with milliseconds (`2026-11-27T06:31:00.123Z`)
-- **kind enum** — `["name-ref", "supersedes", "part-of", "source", "see"]`
+- **kind enum** — `["name-ref", "supersedes", "part-of", "source", "see", "conflict", "depends-on"]`
 - **entity spaces** — `chain | intention | blade | open_item | ruling | term | log`
 - **vambrace** — `string`, the routing key: the UUIDv7 returned by `vambrace`
   (`action: "equip"`, §3.18); pattern
@@ -588,7 +589,7 @@ change. Renames and refiling are just this.
       "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-      "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] },
+      "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see", "conflict", "depends-on"] },
       "note": { "type": "string" }
     },
     "required": ["vambrace", "src", "dst", "kind"]
@@ -608,7 +609,7 @@ change. Renames and refiling are just this.
       "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "src": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "dst": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
-      "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
+      "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see", "conflict", "depends-on"] }
     },
     "required": ["vambrace", "src", "dst", "kind"]
   }
@@ -705,7 +706,7 @@ change. Renames and refiling are just this.
       "vambrace": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$", "description": "Routing key: the UUIDv7 returned by vambrace (action=equip). Required — calls without a known key fail closed; there is no default vambrace." },
       "id": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
       "direction": { "type": "string", "enum": ["in", "out", "both"], "description": "Default both." },
-      "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] }
+      "kind": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see", "conflict", "depends-on"] }
     },
     "required": ["vambrace", "id"]
   }
@@ -726,7 +727,7 @@ change. Renames and refiling are just this.
       "direction": { "type": "string", "enum": ["out", "in", "both"], "description": "Default out." },
       "kinds": {
         "type": "array",
-        "items": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see"] },
+        "items": { "type": "string", "enum": ["name-ref", "supersedes", "part-of", "source", "see", "conflict", "depends-on"] },
         "description": "Restrict traversal to these kinds; omitted = any kind."
       },
       "max_hops": { "type": "integer", "minimum": 1, "description": "Default 2, maximum 5." },
@@ -1324,4 +1325,3 @@ re-validated against the current state).
 1. **UUID storage → `BLOB(16)`** — the project's finalizing step (storage-only; tool surface unchanged).
 2. **Agent-authored entries** — pattern resolved (decisions-as-blades under a designated intention — not a verb, not a `vambrace` action); open: the possibility of seeding the intention space with a few useful agent-specific entries (e.g. a designated agent-notes intention). v1's `logs` are system-minted only.
 3. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale; if built, as a vambrace toggle (index tables in each `<key>.db`, maintained by the write verbs).
-4. **`conflict` + `depends-on` reblade kinds** — settled as context markers for the agent driving the system (user); pending: the two `reblade_kinds` rows, the `kind` enum in the reblade tool schemas, and server validation.

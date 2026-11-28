@@ -225,7 +225,7 @@ The unified UUID/reblade space dissolves the source system's `ruling_tags` and `
 
 `kind` expresses the reblade's **semantic relationship** — never the endpoint type.
 
-v1 kinds: `name-ref` (mentions by name; the kind auto-linking mints at write time) · `supersedes` · `part-of` · `source` (provenance) · `see` (loose relatedness). The set is extensible as needs surface.
+Seeded kinds: `name-ref` (mentions by name; the kind auto-linking mints at write time) · `supersedes` · `part-of` · `source` (provenance) · `see` (loose relatedness) · `conflict` (the endpoints contradict) · `depends-on` (one gates the other). The set is extensible as needs surface.
 
 **Auto-linking:** when text is written (blade insert/edit, chain put), exact name matches mint `name-ref` reblades; anything less than exact returns *candidates* in the response — the server never links silently.
 
