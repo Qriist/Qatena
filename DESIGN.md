@@ -293,7 +293,7 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 
 - `history` mechanism (field-level audit; contract reserved).
 - UUID storage → `BLOB(16)` (finalizing step).
-- Agent-authored log entries — open, surface undetermined: NOT a `vambrace` action (the 10-action vocabulary stays closed to top-level "literally whole project" information; scope-regularity per the retracted `deflected_write` subsumption), and a row-scoped / per-entity-`refs` design is out. Surviving candidate from the discussion: a minimal 21st verb for whole-project entries only (no refs) — or the item is closed.
+- Seeding agent-specific intentions: the possibility of seeding the intention space with a few useful agent-specific entries (e.g. a designated agent-notes intention) so the notes-as-blades pattern is available from the start.
 - Autoexport root clarification (docs): state explicitly that `register_autoexport` / `furnish` may be rooted at any part of the stack — a live intention, a chain within it, or a single blade — with the exported stack extending downward from the root (currently only implicit: SPEC 3.18 names the validation rule, the DESIGN autoexport intro just says "rooted at a live UUID").
 - Autoexport use case example (docs): add a use case example to the Autoexport section — core worldbuilding information kept up to date via a register, immediately available for agent orientation.
 - Make setup pip-able: package Qatena so it installs via pip (no `setup.py`/`pyproject.toml` yet — it currently runs as `python -m qatena` from the repo checkout).
