@@ -519,7 +519,8 @@ class BootstrapMigration(DeflectedTestCase):
         old_key = new_uuid7()
         path = os.path.join(self.armory, old_key + ".db")
         conn = db.connect(path)
-        for stmt in schema.STATEMENTS[:-2]:  # everything except the deflected_writes DDL
+        # everything except the deflected_writes DDL + index and the meta DDL
+        for stmt in schema.STATEMENTS[:-3]:
             conn.execute(stmt)
         now = db.now_ns()
         conn.execute("INSERT INTO logs (created, title, area, body) VALUES (?, ?, ?, ?)",

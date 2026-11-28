@@ -133,6 +133,10 @@ STATEMENTS = [
   cleared_at  INTEGER
 )""",
     "CREATE INDEX IF NOT EXISTS idx_deflected_writes_state ON deflected_writes (state)",
+    """CREATE TABLE IF NOT EXISTS meta (
+  k TEXT PRIMARY KEY,   -- armory-level key (k='saga' = the human-facing name; the in-db copy is the source of truth, the armory ledger is a display cache)
+  v TEXT NOT NULL
+)""",
 ]
 
 

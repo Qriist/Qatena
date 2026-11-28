@@ -13,7 +13,7 @@ import re
 import sqlite3
 import sys
 
-from . import __version__, autoexport, db, schema, uuid7
+from . import __version__, armory, autoexport, db, schema, uuid7
 from .verbs import VerbError, _WRITE_DISPATCH, _resolve_endpoint, canon_args, execute
 
 # The 20 tools: 19 from SPEC.md 3.1-3.19 (same JSON, no rewording) + the
@@ -803,7 +803,7 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call. register_autoexport, deregister_autoexport, and export are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the vambrace (no register row, no log, no stored signature). See SPEC 3.18.",
+        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. register_autoexport, deregister_autoexport, and export are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the vambrace (no register row, no log, no stored signature). Armory-level actions mint no db log rows. See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -811,16 +811,18 @@ TOOLS = [
                     "type": "string",
                     "enum": [
                         "equip",
+                        "inventory",
+                        "saga",
                         "register_autoexport",
                         "deregister_autoexport",
                         "export"
                     ],
-                    "description": "equip: key-less — mints a new vambrace. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the vambrace (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out)."
+                    "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the vambrace (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out). Armory-level actions mint no db log rows."
                 },
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For register_autoexport / deregister_autoexport / export: the vambrace's key (returned by action=equip). Not used by equip."
+                    "description": "For the key-bearing actions (register_autoexport / deregister_autoexport / export / saga): the vambrace's key (returned by action=equip; saga also accepts waylaid keys). Not used by equip or inventory."
                 },
                 "root": {
                     "type": "string",
@@ -851,6 +853,14 @@ TOOLS = [
                         "both"
                     ],
                     "description": "For register_autoexport and export only: reblade layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by equip or deregister."
+                },
+                "label": {
+                    "type": "string",
+                    "description": "For action=saga only: the saga (the human-facing name of the vambrace), presence-masked — omitted = no-change, \"\" = clear, a name = set. A set runs a case-insensitive conflict check against the OTHER known sags (self excluded, live + waylaid). Not used by any other action."
+                },
+                "saga": {
+                    "type": "string",
+                    "description": "For action=equip only: the human-facing name of the new vambrace — stored in the database itself (meta 'saga'; it travels with the file) and mirrored in the armory ledger. Omitted = no saga; a conflicting name (case-insensitive, across live and waylaid) rejects before anything is minted. The future acquire action (snapshot import) takes the same argument. Not used by any other action."
                 }
             },
             "required": [
@@ -921,22 +931,22 @@ def _tool_error(code, message):
 def _call_vambrace(armory_dir, arguments):
     """The vambrace verb itself: armory control (SPEC 1.9, 3.18).
 
-    ``equip`` is the only key-less action. ``register_autoexport``,
-    ``deregister_autoexport``, and ``export`` are KEY-BEARING: they take the
-    the vambrace's key in ``vambrace`` and are validated fail-closed exactly
-    like a routed verb. ``export`` is one-shot: it renders and writes a
-    stack file immediately, read-only against the vambrace (no register row,
-    no log row, no stored signature).
+    Key-less: ``equip`` (mint a vambrace; optional ``saga``) and
+    ``inventory`` (list both populations). KEY-BEARING, validated fail-closed
+    exactly like a routed verb: ``saga`` (works on live AND waylaid keys; an
+    unknown key is not_found), ``register_autoexport``,
+    ``deregister_autoexport``, and ``export`` (one-shot stack render,
+    read-only against the vambrace -- no register row, no log row, no stored
+    signature). Armory-level actions mint no db log rows; the ledger and the
+    responses are their record (draft, ratified 10.8).
     """
     action = arguments.get("action")
     if action == "equip":
-        key = uuid7.new_uuid7()
-        conn = db.connect(os.path.join(armory_dir, key + ".db"))
-        try:
-            schema.bootstrap(conn)
-        finally:
-            conn.close()
-        return {"vambrace": key}, False
+        return _call_equip(armory_dir, arguments)
+    if action == "inventory":
+        return _call_inventory(armory_dir, arguments)
+    if action == "saga":
+        return _call_saga(armory_dir, arguments)
     if action == "register_autoexport":
         return _call_register_autoexport(armory_dir, arguments)
     if action == "deregister_autoexport":
@@ -946,7 +956,130 @@ def _call_vambrace(armory_dir, arguments):
     return _tool_error(
         "unsupported_action",
         f"unsupported vambrace action {action!r} — v1 supports: equip, "
-        "register_autoexport, deregister_autoexport, export"), True
+        "inventory, saga, register_autoexport, deregister_autoexport, "
+        "export"), True
+
+
+def _call_equip(armory_dir, arguments):
+    """equip (SPEC 1.9, draft 5.1): key-less. The optional ``saga`` (the
+    human-facing name) conflict-checks case-insensitively against the known
+    sags -- the meta 'saga' row of every live and waylaid db -- BEFORE
+    minting, so a conflict rejects with no file litter and no ledger entry.
+    Success: mint, bootstrap, one meta row (small RW tx, no log row), then
+    the ledger mirror (a failed mirror never fails the action -- the db is
+    truth)."""
+    saga = arguments.get("saga")
+    if saga is not None:
+        if not isinstance(saga, str):
+            return _tool_error("validation_failed",
+                               "saga must be a string: omitted = no saga"), True
+        saga = saga or None  # "" on a fresh db clears nothing: no saga
+    if saga:
+        offender = armory.find_saga_conflict(armory_dir, saga)
+        if offender is not None:
+            return _tool_error("duplicate_name",
+                               f"saga {saga!r} already belongs to vambrace "
+                               f"{offender}"), True
+    key = uuid7.new_uuid7()
+    path = os.path.join(armory_dir, key + ".db")
+    conn = db.connect(path)
+    try:
+        schema.bootstrap(conn)
+        if saga:
+            armory.set_db_saga(conn, saga)
+    except sqlite3.Error as e:
+        # no file litter: a failed equip leaves no partial vambrace behind
+        for name in (path, path + "-wal", path + "-shm"):
+            try:
+                os.remove(name)
+            except OSError:
+                pass
+        return _tool_error("db_error", str(e)), True
+    finally:
+        conn.close()
+    payload = {"vambrace": key}
+    if saga:
+        payload["saga"] = saga
+        warning = armory.mirror_saga(armory_dir, key, saga)
+        if warning:
+            payload["ledger_warning"] = warning
+    return payload, False
+
+
+def _call_inventory(armory_dir, arguments):
+    """inventory (draft 5.2): key-less, no parameters. Both populations --
+    live and waylaid -- with saga/size/mtime and the waylay dismantle
+    counts; strays skipped silently. A missing/corrupt ledger rebuilds the
+    sagas from the dbs (the db is truth), zeroes the counts (fail-closed),
+    and flags ledger_rebuilt."""
+    return armory.inventory(armory_dir), False
+
+
+def _resolve_saga_target(armory_dir, key):
+    """Key check for the saga action: the same fail-closed missing/malformed
+    codes as the routed verbs, but an unknown key (neither live nor waylaid)
+    is not_found -- an armory-level action, not a routed verb. Returns
+    (path, None) or (None, (payload, True))."""
+    if not isinstance(key, str) or not key:
+        return None, (_tool_error("missing_vambrace",
+                                  "vambrace routing key is required — create a vambrace with the "
+                                  "vambrace verb (action=equip) first"), True)
+    if not _VAMBRACE_KEY_RE.match(key):
+        return None, (_tool_error("malformed_vambrace",
+                                  f"vambrace key must be a UUIDv7 (36-char lowercase, version 7): got {key!r}"), True)
+    path = os.path.join(armory_dir, key + ".db")
+    if os.path.exists(path):
+        return path, None
+    path = os.path.join(armory_dir, armory.WAYLAY_DIR, key + ".db")
+    if os.path.exists(path):
+        return path, None
+    return None, (_tool_error("not_found",
+                              f"unknown vambrace '{key}': no live or waylaid "
+                              "database in the armory"), True)
+
+
+def _call_saga(armory_dir, arguments):
+    """saga (draft 5.3): key-bearing; works on live AND waylaid keys.
+    Presence-masked ``label``: omitted = no-change, "" = clear, a name = set
+    -- the set path runs a case-insensitive conflict check against the OTHER
+    known sags (self excluded). Write order: one small RW tx on the db (meta
+    row, no log row) -> ledger mirror; a failed mirror does not fail the
+    action (the db is the source of truth) -- the response carries
+    ledger_warning instead."""
+    key = arguments.get("vambrace")
+    path, err = _resolve_saga_target(armory_dir, key)
+    if err is not None:
+        return err
+    label = arguments.get("label")
+    if label is not None and not isinstance(label, str):
+        return _tool_error("validation_failed",
+                           'label must be a string: omitted = no-change, "" = clear'), True
+    conn = db.connect(path)
+    try:
+        schema.bootstrap(conn)  # idempotent self-heal, as on every routed open
+        if label is None:
+            row = conn.execute(
+                "SELECT v FROM meta WHERE k = ?", (armory.SAGA_KEY,)).fetchone()
+            saga = row["v"] if row is not None else None
+        elif label == "":
+            saga = armory.set_db_saga(conn, None)
+        else:
+            offender = armory.find_saga_conflict(armory_dir, label, exclude=key)
+            if offender is not None:
+                return _tool_error("duplicate_name",
+                                   f"saga {label!r} already belongs to vambrace "
+                                   f"{offender}"), True
+            saga = armory.set_db_saga(conn, label)
+    except sqlite3.Error as e:
+        return _tool_error("db_error", str(e)), True
+    finally:
+        conn.close()
+    payload = {"key": key, "saga": saga}
+    if label is not None:
+        warning = armory.mirror_saga(armory_dir, key, saga)
+        if warning:
+            payload["ledger_warning"] = warning
+    return payload, False
 
 
 def _validate_routing_key(key, armory_dir):

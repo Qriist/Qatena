@@ -186,11 +186,21 @@ class ServerSmoke(unittest.TestCase):
             for t in tools:
                 props = t["inputSchema"]["properties"]
                 if t["name"] == "vambrace":
-                    # equip is key-less (the key must NOT be required); the two
-                    # key-bearing autoexport actions take it as an optional arg
+                    # equip is key-less (the key must NOT be required); the
+                    # key-bearing actions take it as an optional arg
                     self.assertEqual(props.get("vambrace", {}).get("type"), "string")
                     self.assertNotIn("vambrace", t["inputSchema"]["required"])
                     self.assertIn("action", t["inputSchema"]["required"])
+                    # phase 1 (lifecycle draft): the action set grows on the
+                    # existing tool (count stays 20); label drives the saga
+                    # action, saga names an equip
+                    self.assertEqual(
+                        props["action"]["enum"],
+                        ["equip", "inventory", "saga",
+                         "register_autoexport", "deregister_autoexport",
+                         "export"])
+                    self.assertEqual(props.get("label", {}).get("type"), "string")
+                    self.assertEqual(props.get("saga", {}).get("type"), "string")
                 else:
                     self.assertEqual(props.get("vambrace", {}).get("type"), "string")
                     self.assertIn("vambrace", t["inputSchema"]["required"])
