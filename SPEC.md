@@ -1177,33 +1177,21 @@ agent interpretation. The table below explains this verb’s divergent behaviors
 
 | rule | behavior |
 |---|---|
+| name | an open item must have a human-readable name to even exist: creation always goes through a non-empty name — a nameless item can never be minted |
 | minimal call | `vambrace` + `action` + `id` on an existing item (routing key, operation, target); on a **mint** `name` takes `id`’s place — the name is the creation key, `id` is minted |
-| repeated name | idempotent: returns the full existing row — all non-null fields (NULLs omitted, not zero-filled; a sparse row comes back sparse) — no clobber, no error |
+| addressing | `id` (uuid, shape-checked) takes precedence over `name`; neither supplied → `validation_failed` |
+| repeated name | idempotent: supplied fields apply as an update of the found item — repeated names are lookups, not faults; the response is the full row, all non-null fields (NULLs omitted, not zero-filled; a sparse row comes back sparse) — no clobber, no error |
 | `created` marker | always on the name-addressed response (`true` fresh mint / `false` found); it takes the `created` key slot there, so the row’s created timestamp is omitted (recoverable via `get`); id-addressed responses render `created` as the ISO timestamp, no marker |
 | no-op put | mints its log row as any write but refs nothing; does not bump `updated` |
-| rename | `id` + a differing `name` on `put` (as `chain_put` is) |
-| presence-mask | `name`, `state`, body, all seven freeform — all OPTIONAL; `state` defaults to `open` on creation |
-| addressing guard | missing/empty `name` is checked against `id` first: resolvable → update of it; unresolvable → `not_found`. Creation always goes through a non-empty name — a nameless put can never mint. Hard guard, not a convention: this is the human-driven space, and it must not get mangled by the agent |
+| rename | `id` + a differing `name` on `put` (as `chain_put` is); a rename onto another item’s name fails `duplicate_name` |
+| presence-mask | `name`, `state`, body, all seven freeform — all OPTIONAL; an explicit `null` clears a stored field, an absent one leaves it unchanged; `state` defaults to `open` on creation |
+| state | validates against the `open_item_states` register (`validation_failed` otherwise); not clearable; defaults to `open` on mint |
+| response | the row’s non-null fields (NULLs omitted, not zero-filled), `created`/`updated` as iso, plus `log_id` |
+| addressing guard | missing/empty `name` is checked against `id` first: resolvable → update of it; unresolvable → `not_found`. Hard guard, not a convention: this is the human-driven space, and it must not get mangled by the agent |
 | surface shape | one `action`-driven verb (`put` \| `delete`), not a set of verbs — the surface stays under the ~25 enabled-tools threshold where goose degrades; no separate rename or state actions (`state` is a field); reads stay on the generic `get` / `list` / `search` |
 | batch exclusion | `open_item` ops are deliberately **not** `batch` ops — freeform items are too easy to co-mangle by a bad prompt into one all-or-nothing transaction; the human-driven surface stays one call per item |
 
-`put` — create-or-update, **presence-masked** (only supplied fields change; an explicit
-`null` clears a stored field, an absent one leaves it unchanged). Addressing: `id` (uuid,
-shape-checked) takes precedence over `name`; neither supplied → `validation_failed`.
-**Hard guard:** a request with a missing or empty `name` is first checked against the
-supplied `id` — a resolvable `id` makes the call an update of that item; an unresolvable one
-is rejected `not_found`. Creation always goes through a non-empty name; a nameless put can
-never mint. A name-addressed put whose name already resolves is **idempotent** (no clobber,
-no error; supplied fields apply as an update of the found item — repeated names are lookups,
-not faults). `id` + a differing name is a **rename** (as `chain_put`); a rename onto another
-item's name fails `duplicate_name`. `state` validates against the `open_item_states` register
-(`validation_failed` otherwise; not clearable) and defaults to `open` on mint only.
-**Response:** the item's row as all non-null fields (NULLs omitted, not zero-filled),
-`created`/`updated` as iso, plus `log_id`. The name-addressed path (fresh mint or found)
-**always** carries the created-vs-found marker `created` (`true`/`false`); on that path the
-marker takes the `created` key, so the row's created timestamp is omitted (recoverable via
-`get`). The id-addressed path carries no marker (`created` renders as the ISO timestamp).
-A no-op put mints its log row but refs nothing and does not bump `updated`.
+`put` — create-or-update, presence-masked; the table above is the contract.
 
 `delete` — by `id` or `name` (an `id` + `name` mismatch is `validation_failed`; neither or
 unresolvable is `not_found`). The row is deleted; its **outgoing** reblades are
