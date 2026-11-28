@@ -296,3 +296,4 @@ Placeholder surface only. A verb-level contract is reserved: field-level change 
 - Agent-authored log entries (a 21st-verb candidate now — the 20th went to `deflected_write` in `bcdc70c`) — open.
 - Autoexport root clarification (docs): state explicitly that `register_autoexport` / `furnish` may be rooted at any part of the stack — a live intention, a chain within it, or a single blade — with the exported stack extending downward from the root (currently only implicit: SPEC 3.18 names the validation rule, the DESIGN autoexport intro just says "rooted at a live UUID").
 - Autoexport use case example (docs): add a use case example to the Autoexport section — core worldbuilding information kept up to date via a register, immediately available for agent orientation.
+- Make setup pip-able: package Qatena so it installs via pip (no `setup.py`/`pyproject.toml` yet — it currently runs as `python -m qatena` from the repo checkout).
