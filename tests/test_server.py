@@ -196,7 +196,7 @@ class ServerSmoke(unittest.TestCase):
                     # action, saga names an equip
                     self.assertEqual(
                         props["action"]["enum"],
-                        ["equip", "inventory", "saga",
+                        ["equip", "inventory", "saga", "acquire",
                          "register_autoexport", "deregister_autoexport",
                          "furnish", "waylay", "recover", "dismantle"])
                     self.assertEqual(props.get("label", {}).get("type"), "string")

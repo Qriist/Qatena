@@ -917,5 +917,365 @@ class LifecycleInventory(Base):
         self.assertEqual(self.read_ledger(), {"sagas": {}, "waylays": {}})
 
 
+class Acquire(Base):
+    """Phase 4 (draft 5.4): acquire -- key-less import of a whole-vambrace
+    (mythos) snapshot file into a NEW vambrace. Entity UUIDs are preserved
+    verbatim (reblades, log refs, and the graph land intact), value
+    registers are upserted from the imported rows, one genesis log row
+    (area 'acquire') is minted; a rejected or failed acquire leaves nothing
+    behind (no file litter)."""
+
+    def routed(self, key, verb, **args):
+        return server._call_routed(self.armory, verb,
+                                   dict({"vambrace": key}, **args))
+
+    def set_saga_direct(self, key, saga):
+        """The in-db saga written directly: the actions' own conflict check
+        would reject a colliding name, and the harness drives the db the
+        same way it drives the file location."""
+        conn = db.connect(self._dbpath(key))
+        try:
+            conn.execute(
+                "INSERT INTO meta (k, v) VALUES (?, ?) "
+                "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                (armory.SAGA_KEY, saga))
+        finally:
+            conn.close()
+
+    def seed_ruling_term(self, key):
+        """One ruling + one term (no routed verb covers those spaces): the
+        register-upsert paths."""
+        conn = db.connect(self.live_path(key))
+        try:
+            now = db.now_ns()
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO rulings (id, number, name, state, body, "
+                "created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (new_uuid7(), "R-001", "First Ruling", "active",
+                 "ruling body", now, now))
+            conn.execute(
+                "INSERT INTO terms (id, term, text, created, updated) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (new_uuid7(), "Vambrace", "the key", now, now))
+            conn.execute("COMMIT")
+        finally:
+            conn.close()
+
+    def seed_content(self, key):
+        """All eight spaces via routed verbs + the ruling/term seeds;
+        returns the chain uuid (a stack root)."""
+        chain = self.routed(key, "chain_put", name="A",
+                            intentions=[{"name": "I1"}])[0]["id"]
+        self.routed(key, "blade_insert", chain=chain, text="b1")
+        self.routed(key, "reblade_add", src=chain, dst=chain, kind="see",
+                    note="n")
+        self.routed(key, "open_item", action="put", name="oi1",
+                    state="open", text="t")
+        self.seed_ruling_term(key)
+        return chain
+
+    def furnish_mythos(self, key, fmt="json", name=None):
+        emit = self.emit_path(name or f"file1.{fmt}")
+        payload, is_error = self.call({
+            "action": "furnish", "vambrace": key, "root": "mythos",
+            "emit_path": emit, "emit_format": fmt})
+        self.assertFalse(is_error, repr(payload))
+        return emit
+
+    def clear_saga(self, key):
+        """The saga action's '' = clear: after a furnish, the file carries
+        the saga, and the live source must drop it -- a file-carried saga
+        conflict-checks against the source itself (acquire has no
+        self-exclusion: the new key does not exist yet)."""
+        payload, is_error = self.call(
+            {"action": "saga", "vambrace": key, "label": ""})
+        self.assertFalse(is_error, repr(payload))
+
+    def acquire(self, path, **extra):
+        return self.call(dict({"action": "acquire", "path": path}, **extra))
+
+    def parse(self, path, fmt):
+        with open(path, "r", encoding="utf-8") as f:
+            return snapshot.parse_mythos(f.read(), fmt)
+
+    def _minimal_mythos(self, kind, ostate, rstate):
+        iso = db.ns_to_iso(db.now_ns())
+        return json.dumps({
+            "exported_at": iso,
+            "key": new_uuid7(),
+            "spaces": {
+                "chains": [],
+                "blades": [],
+                "reblades": [{
+                    "src_uuid": new_uuid7(), "dst_uuid": new_uuid7(),
+                    "kind": kind, "created": iso,
+                }],
+                "intentions": [],
+                "open_items": [{
+                    "id": new_uuid7(), "name": "Stuck Item", "state": ostate,
+                    "created": iso, "updated": iso,
+                }],
+                "rulings": [{
+                    "id": new_uuid7(), "number": "R-X", "name": "Stale One",
+                    "state": rstate, "created": iso, "updated": iso,
+                }],
+                "terms": [],
+                "logs": [],
+            },
+        })
+
+    def test_round_trip_all_four_formats(self):
+        key = self.make()
+        self.seed_content(key)
+        for fmt in ("md", "csv", "json", "ndjson"):
+            file1 = self.furnish_mythos(key, fmt, f"file1.{fmt}")
+            p, e = self.acquire(file1, format=fmt)
+            self.assertFalse(e, repr(p))
+            key2 = p["key"]
+            self.assertNotEqual(key2, key, fmt)
+            p1 = self.parse(file1, fmt)
+            # the import counts are the seeded content, read from the file
+            self.assertEqual(
+                p["imported"],
+                {s: len(p1["spaces"][s]) for s in snapshot.SPACES}, fmt)
+            for s in ("chains", "blades", "reblades", "intentions",
+                      "open_items", "rulings", "terms"):
+                self.assertEqual(p["imported"][s], 1, fmt)
+            self.assertIsInstance(p["log_id"], int, fmt)
+            # the acquired vambrace re-snapshots identically (the genesis
+            # row is the only difference, at the max log id + 1)
+            file2 = self.furnish_mythos(key2, fmt, f"file2.{fmt}")
+            p2 = self.parse(file2, fmt)
+            for s in snapshot.SPACES:
+                if s != "logs":
+                    self.assertEqual(p2["spaces"][s], p1["spaces"][s],
+                                     (fmt, s))
+            logs1 = p1["spaces"]["logs"]
+            logs2 = p2["spaces"]["logs"]
+            self.assertEqual(logs2[:len(logs1)], logs1, fmt)
+            extra = logs2[len(logs1):]
+            self.assertEqual(len(extra), 1, fmt)
+            gen = extra[0]
+            self.assertEqual(gen["area"], "acquire", fmt)
+            self.assertEqual(gen["title"], "acquire: from " + file1, fmt)
+            self.assertEqual(gen["refs"], [], fmt)
+            self.assertEqual(gen["id"], max(l["id"] for l in logs1) + 1, fmt)
+            self.assertRegex(p1["exported_at"], ISO_RE, fmt)
+            self.assertRegex(p2["exported_at"], ISO_RE, fmt)
+            self.assertEqual(p1["key"], key, fmt)
+            self.assertEqual(p2["key"], key2, fmt)
+            # pop exported_at before the whole-payload comparison: file2 is
+            # file1 + the genesis row, re-keyed
+            p1.pop("exported_at")
+            p2.pop("exported_at")
+            expected2 = dict(p1)
+            expected2["key"] = key2
+            expected2["spaces"] = dict(p1["spaces"])
+            expected2["spaces"]["logs"] = logs1 + [gen]
+            self.assertEqual(p2, expected2, fmt)
+
+    def test_round_trip_preserves_saga(self):
+        key = self.make(saga="My Saga")
+        self.seed_content(key)
+        file1 = self.furnish_mythos(key)
+        self.clear_saga(key)  # the file carries "My Saga"; the source drops it
+        p, e = self.acquire(file1, format="json")
+        self.assertFalse(e, repr(p))
+        key2 = p["key"]
+        self.assertEqual(p["saga"], "My Saga")
+        self.assertEqual(self.db_saga(key2), "My Saga")
+        self.assertEqual(self.read_ledger()["sagas"], {key2: "My Saga"})
+
+    def test_saga_supplied_beats_file(self):
+        key = self.make(saga="FromFile")
+        self.seed_content(key)
+        file1 = self.furnish_mythos(key)
+        p, e = self.acquire(file1, format="json", saga="Supplied")
+        self.assertFalse(e, repr(p))
+        key2 = p["key"]
+        self.assertEqual(p["saga"], "Supplied")
+        self.assertEqual(self.db_saga(key2), "Supplied")
+        self.assertEqual(self.read_ledger()["sagas"][key2], "Supplied")
+
+    def test_saga_empty_string_is_deliberate_none(self):
+        key = self.make(saga="FromFile")
+        self.seed_content(key)
+        file1 = self.furnish_mythos(key)
+        p, e = self.acquire(file1, format="json", saga="")
+        self.assertFalse(e, repr(p))
+        key2 = p["key"]
+        self.assertNotIn("saga", p)
+        self.assertIsNone(self.db_saga(key2))
+        self.assertEqual(self.read_ledger()["sagas"], {key: "FromFile"})
+
+    def test_saga_none_everywhere(self):
+        key = self.make()
+        self.seed_content(key)
+        file1 = self.furnish_mythos(key)
+        p, e = self.acquire(file1, format="json")
+        self.assertFalse(e, repr(p))
+        key2 = p["key"]
+        self.assertNotIn("saga", p)
+        self.assertIsNone(self.db_saga(key2))
+        self.assertIsNone(self.read_ledger())  # nothing to mirror
+
+    def test_conflict_supplied_names_offender(self):
+        offender = self.make(saga="Taken")
+        key = self.make()
+        self.seed_content(key)
+        file1 = self.furnish_mythos(key)  # the file carries no saga
+        before = self.db_files()
+        p, e = self.acquire(file1, format="json", saga="taken")
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "duplicate_name")
+        self.assertIn(offender, p["error"]["message"])
+        self.assertEqual(self.db_files(), before)  # no litter
+
+    def test_conflict_file_carried_names_offender(self):
+        src = self.make(saga="Taken")
+        self.seed_content(src)
+        file1 = self.furnish_mythos(src)  # the file carries "Taken"
+        self.clear_saga(src)  # only the file carries it now
+        offender = self.make()
+        self.set_saga_direct(offender, "taken")
+        before = self.db_files()
+        p, e = self.acquire(file1, format="json")
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "duplicate_name")
+        self.assertIn(offender, p["error"]["message"])
+        self.assertEqual(self.db_files(), before)  # no litter
+
+    def test_conflict_against_waylaid(self):
+        a = self.make(saga="Taken")
+        self.waylaid(a)  # the waylaid db holds "Taken"
+        c = self.make()
+        self.seed_content(c)
+        self.set_saga_direct(c, "taken")
+        file1 = self.furnish_mythos(c)  # the file carries "taken"
+        self.clear_saga(c)  # live c drops it: only waylaid a holds "Taken"
+        before = self.db_files()
+        p, e = self.acquire(file1, format="json")
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "duplicate_name")
+        self.assertIn(a, p["error"]["message"])
+        self.assertEqual(self.db_files(), before)  # no litter
+
+    def test_stack_shaped_rejected(self):
+        key = self.make()
+        chain = self.seed_content(key)
+        emit = self.emit_path("stack.json")
+        p, e = self.call({
+            "action": "furnish", "vambrace": key, "root": chain,
+            "emit_path": emit, "emit_format": "json"})
+        self.assertFalse(e, repr(p))
+        before = self.db_files()
+        p, e = self.acquire(emit, format="json")
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "validation_failed")
+        self.assertIn("not a whole-vambrace snapshot", p["error"]["message"])
+        self.assertEqual(self.db_files(), before)  # no litter
+
+    def test_corrupt_file_rejected(self):
+        path = self.emit_path("corrupt.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("not json {")
+        before = self.db_files()
+        p, e = self.acquire(path, format="json")
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "validation_failed")
+        self.assertIn("corrupt json snapshot", p["error"]["message"])
+        self.assertEqual(self.db_files(), before)  # no litter
+
+    def test_missing_file(self):
+        before = self.db_files()
+        p, e = self.acquire(os.path.join(self.armory, "nope.json"),
+                            format="json")
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "not_found")
+        self.assertIn("acquire source not found", p["error"]["message"])
+        self.assertEqual(self.db_files(), before)  # no litter
+
+    def test_bad_format_and_missing_format(self):
+        key = self.make()
+        self.seed_content(key)
+        file1 = self.furnish_mythos(key)
+        before = self.db_files()
+        p, e = self.acquire(file1, format="doc")
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "validation_failed")
+        for fmt in ("md", "csv", "json", "ndjson"):
+            self.assertIn(fmt, p["error"]["message"])
+        p, e = self.acquire(file1)
+        self.assertTrue(e)
+        self.assertEqual(p["error"]["code"], "validation_failed")
+        self.assertIn("must be one of", p["error"]["message"])
+        self.assertEqual(self.db_files(), before)  # no litter
+
+    def test_register_upserts_from_imported_rows(self):
+        path = self.emit_path("minimal.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self._minimal_mythos("wibble", "stuck", "stale"))
+        p, e = self.acquire(path, format="json")
+        self.assertFalse(e, repr(p))
+        key2 = p["key"]
+        self.assertEqual(p["imported"]["reblades"], 1)
+        self.assertEqual(p["imported"]["open_items"], 1)
+        self.assertEqual(p["imported"]["rulings"], 1)
+        self.assertEqual(p["imported"]["chains"], 0)
+        conn = db.connect(self.live_path(key2))
+        try:
+            def one(table, col, val):
+                return conn.execute(
+                    f"SELECT COUNT(*) c FROM {table} WHERE {col} = ?",
+                    (val,)).fetchone()["c"] == 1
+            self.assertTrue(one("reblade_kinds", "kind", "wibble"))
+            self.assertTrue(one("open_item_states", "name", "stuck"))
+            self.assertTrue(one("ruling_states", "name", "stale"))
+            # the rows landed (the FKs resolved against the upserted rows)
+            for table in ("reblades", "open_items", "rulings"):
+                self.assertEqual(
+                    conn.execute(
+                        f"SELECT COUNT(*) c FROM {table}").fetchone()["c"], 1)
+        finally:
+            conn.close()
+
+    def test_genesis_row(self):
+        path = self.emit_path("minimal2.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self._minimal_mythos("name-ref", "open", "active"))
+        p, e = self.acquire(path, format="json")
+        self.assertFalse(e, repr(p))
+        key2 = p["key"]
+        conn = db.connect(self.live_path(key2))
+        try:
+            rows = conn.execute(
+                "SELECT id, title, area, body FROM logs "
+                "WHERE area = 'acquire'").fetchall()
+            self.assertEqual(len(rows), 1)
+            gen = rows[0]
+            self.assertEqual(gen["id"], p["log_id"])
+            self.assertEqual(gen["title"], "acquire: from " + path)
+            self.assertEqual(
+                conn.execute(
+                    "SELECT COUNT(*) c FROM log_refs WHERE log_id = ?",
+                    (gen["id"],)).fetchone()["c"], 0)
+            self.assertEqual(json.loads(gen["body"]), [{
+                "imported": p["imported"], "op": "acquire", "path": path}])
+        finally:
+            conn.close()
+
+    def test_acquired_is_routable(self):
+        key = self.make()
+        self.seed_content(key)
+        file1 = self.furnish_mythos(key)
+        p, e = self.acquire(file1, format="json")
+        self.assertFalse(e, repr(p))
+        out, is_error = self.routed(p["key"], "list", space="chain")
+        self.assertFalse(is_error, repr(out))
+        self.assertEqual(out["count"], 1)
+        self.assertEqual(out["items"][0]["name"], "A")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -34,7 +34,7 @@ import re
 import secrets
 import sqlite3
 
-from . import autoexport, db
+from . import autoexport, db, schema
 from .verbs import _bare, _intention_names
 
 ALLOWED_FORMATS = autoexport.ALLOWED_FORMATS
@@ -562,3 +562,219 @@ def write_mythos(vambrace_path, key, emit_path, emit_format):
     finally:
         conn.close()
     return _atomic_write(render_mythos(payload, emit_format), emit_path)
+
+
+# ------------------------------------------------------------ import path
+
+# The log_refs op check (SPEC 2) -- a ref outside these ops is a corrupt
+# snapshot, never a silent drop.
+_LOG_REF_OPS = ("created", "modified", "deleted", "referenced")
+
+
+def _need(rec, space, *keys):
+    """Raise ValueError naming the first key a snapshot record must carry."""
+    for k in keys:
+        if k not in rec:
+            raise ValueError(
+                f"corrupt mythos snapshot: missing {k} in {space} record")
+
+
+def import_mythos(vambrace_path, key, payload, source_path, saga=None):
+    """The inverse of compute_mythos: load a parsed mythos payload (the
+    section-6.2 shape) into a NEW vambrace file -- the acquire import core
+    (draft 5.4). ``key`` is the NEW key the file is named after; the key
+    carried by the payload is provenance, not identity.
+
+    One transaction: every row lands or nothing does (on any failure
+    ROLLBACK and re-raise; the caller removes the file). Entity UUIDs are
+    preserved verbatim -- reblades, log refs, and the graph land intact
+    (reblade endpoints are NOT resolved: polymorphic by design). Value
+    registers are EXTENDED from the imported rows (upserted: an unknown
+    value is legal, never a failure). Timestamps (ISO-8601 UTC millis, the
+    surface form) convert back with db.iso_to_ns. One genesis log row
+    (area 'acquire') is minted at the end: it is the action's record, not
+    part of the import, and is NOT counted in the returned counts.
+
+    Returns {"imported": {space: count}, "log_id": the genesis row id}."""
+    if (not isinstance(payload, dict) or not isinstance(
+            payload.get("spaces"), dict)
+            or any(not isinstance(payload["spaces"].get(s), list)
+                   for s in SPACES)):
+        raise ValueError(
+            "corrupt mythos snapshot: the payload must carry all eight "
+            f"spaces as lists: {list(SPACES)}")
+    spaces = payload["spaces"]
+
+    conn = db.connect(vambrace_path)
+    try:
+        schema.bootstrap(conn)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # a. the value registers are extended from the imported rows
+            # (upsert: the import extends a register, never fails on it)
+            for rec in spaces["reblades"]:
+                _need(rec, "reblades", "kind")
+                conn.execute(
+                    "INSERT OR IGNORE INTO reblade_kinds (kind) VALUES (?)",
+                    (rec["kind"],))
+            for rec in spaces["open_items"]:
+                _need(rec, "open_items", "state")
+                conn.execute(
+                    "INSERT OR IGNORE INTO open_item_states (name) VALUES (?)",
+                    (rec["state"],))
+            for rec in spaces["rulings"]:
+                _need(rec, "rulings", "state")
+                conn.execute(
+                    "INSERT OR IGNORE INTO ruling_states (name) VALUES (?)",
+                    (rec["state"],))
+            # b. intentions (the map below resolves names against this)
+            for rec in spaces["intentions"]:
+                _need(rec, "intentions", "id", "name", "orientation",
+                      "created", "updated")
+                conn.execute(
+                    "INSERT INTO chain_intentions "
+                    "(id, name, orientation, created, updated) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (rec["id"], rec["name"], rec["orientation"],
+                     db.iso_to_ns(rec["created"]), db.iso_to_ns(rec["updated"])))
+            # c. chains
+            for rec in spaces["chains"]:
+                _need(rec, "chains", "id", "name", "created", "updated")
+                conn.execute(
+                    "INSERT INTO chain_headers "
+                    "(id, name, created, updated) VALUES (?, ?, ?, ?)",
+                    (rec["id"], rec["name"],
+                     db.iso_to_ns(rec["created"]),
+                     db.iso_to_ns(rec["updated"])))
+            # d. the intention map: name -> id (COLLATE NOCASE); a missing
+            # target is a corrupt snapshot
+            for ch in spaces["chains"]:
+                for iname in ch.get("intentions", []):
+                    row = conn.execute(
+                        "SELECT id FROM chain_intentions WHERE name = ? "
+                        "COLLATE NOCASE", (iname,)).fetchone()
+                    if row is None:
+                        raise ValueError(
+                            "corrupt mythos snapshot: chain "
+                            f"{ch.get('name')!r} maps to unknown intention "
+                            f"{iname!r}")
+                    conn.execute(
+                        "INSERT OR IGNORE INTO chain_intention_map "
+                        "(chain_id, intention_id) VALUES (?, ?)",
+                        (ch["id"], row["id"]))
+            # e. blades + order (the display name rides the record, the FK
+            # chain_id is truth and is what lands)
+            for rec in spaces["blades"]:
+                _need(rec, "blades", "id", "chain_id", "text", "pos",
+                      "created", "updated")
+                conn.execute(
+                    "INSERT INTO chain_blades "
+                    "(id, chain_id, text, created, updated) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (rec["id"], rec["chain_id"], rec["text"],
+                     db.iso_to_ns(rec["created"]),
+                     db.iso_to_ns(rec["updated"])))
+                conn.execute(
+                    "INSERT INTO blade_order (chain_id, blade_id, pos) "
+                    "VALUES (?, ?, ?)",
+                    (rec["chain_id"], rec["id"], int(rec["pos"])))
+            # f. reblades (endpoints are NOT resolved: polymorphic by design)
+            for rec in spaces["reblades"]:
+                _need(rec, "reblades", "src_uuid", "dst_uuid", "kind",
+                      "created")
+                conn.execute(
+                    "INSERT INTO reblades (src_uuid, dst_uuid, kind, note, "
+                    "created) VALUES (?, ?, ?, ?, ?)",
+                    (rec["src_uuid"], rec["dst_uuid"], rec["kind"],
+                     rec.get("note"), db.iso_to_ns(rec["created"])))
+            # g. open items: all 13 columns, the optional ones NULL
+            for rec in spaces["open_items"]:
+                _need(rec, "open_items", "id", "name", "state", "created",
+                      "updated")
+                conn.execute(
+                    "INSERT INTO open_items (id, name, state, text, created, "
+                    "updated, freeform_current, freeform_pending, "
+                    "freeform_total, freeform_next, freeform_last, "
+                    "freeform_due, freeform_priority) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (rec["id"], rec["name"], rec["state"], rec.get("text"),
+                     db.iso_to_ns(rec["created"]),
+                     db.iso_to_ns(rec["updated"]),
+                     rec.get("freeform_current"),
+                     rec.get("freeform_pending"),
+                     rec.get("freeform_total"),
+                     rec.get("freeform_next"),
+                     rec.get("freeform_last"),
+                     rec.get("freeform_due"),
+                     rec.get("freeform_priority")))
+            # h. rulings (body optional)
+            for rec in spaces["rulings"]:
+                _need(rec, "rulings", "id", "number", "name", "state",
+                      "created", "updated")
+                conn.execute(
+                    "INSERT INTO rulings (id, number, name, state, body, "
+                    "created, updated) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (rec["id"], rec["number"], rec["name"], rec["state"],
+                     rec.get("body"), db.iso_to_ns(rec["created"]),
+                     db.iso_to_ns(rec["updated"])))
+            # i. terms (text optional)
+            for rec in spaces["terms"]:
+                _need(rec, "terms", "id", "term", "created", "updated")
+                conn.execute(
+                    "INSERT INTO terms (id, term, text, created, updated) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (rec["id"], rec["term"], rec.get("text"),
+                     db.iso_to_ns(rec["created"]),
+                     db.iso_to_ns(rec["updated"])))
+            # j. logs: the EXPLICIT source id (the ids are dense from 1, so
+            # the genesis row below lands at max + 1)
+            for rec in spaces["logs"]:
+                _need(rec, "logs", "id", "created", "body")
+                conn.execute(
+                    "INSERT INTO logs (id, created, title, area, body) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (int(rec["id"]), db.iso_to_ns(rec["created"]),
+                     rec.get("title"), rec.get("area"), rec["body"]))
+            # k. log refs (they outlive their entities; validated against
+            # the CHECK constraint)
+            for rec in spaces["logs"]:
+                for ref in rec.get("refs", []):
+                    if (not isinstance(ref, dict) or "uuid" not in ref
+                            or "op" not in ref
+                            or ref["op"] not in _LOG_REF_OPS):
+                        raise ValueError(
+                            "corrupt mythos snapshot: bad log ref "
+                            f"{ref!r} in log {rec.get('id')!r}")
+                    conn.execute(
+                        "INSERT OR IGNORE INTO log_refs "
+                        "(log_id, uuid, op) VALUES (?, ?, ?)",
+                        (int(rec["id"]), ref["uuid"], ref["op"]))
+            # l. the saga: the same upsert as armory.set_db_saga
+            if saga:
+                conn.execute(
+                    "INSERT INTO meta (k, v) VALUES ('saga', ?) "
+                    "ON CONFLICT(k) DO UPDATE SET v = excluded.v",
+                    (saga,))
+            # m. the genesis log row (the one db log row the action mints;
+            # no log_refs -- the imported counts + source path are its body,
+            # the house JSON-array convention)
+            cur = conn.execute(
+                "INSERT INTO logs (created, title, area, body) "
+                "VALUES (?, ?, ?, ?)",
+                (db.now_ns(), "acquire: from " + source_path, "acquire",
+                 json.dumps(
+                     [{"imported": {s: len(spaces[s]) for s in SPACES},
+                       "op": "acquire", "path": source_path}],
+                     sort_keys=True, separators=(",", ":"))))
+            log_id = cur.lastrowid
+            conn.execute("COMMIT")
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+    finally:
+        conn.close()
+    return {"imported": {s: len(spaces[s]) for s in SPACES},
+            "log_id": log_id}

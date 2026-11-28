@@ -803,7 +803,7 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. register_autoexport, deregister_autoexport, and furnish are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and furnish. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately; root = the literal 'mythos' snapshots the whole vambrace (all eight spaces + meta). Both are read-only against the vambrace (no register row, no log, no stored signature). The lifecycle actions manage the file location, which IS the state: waylay is key-bearing, live keys only, with REQUIRED emit_path + emit_format — an inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir; recover is key-bearing, waylaid keys only — moves the file back and resets the dismantle count; dismantle is key-bearing, waylaid keys only — requests 1-2 warn (dismantled: false) and request 3 destroys (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows. See SPEC 3.18.",
+        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. acquire is key-less: REQUIRED 'path' (an existing readable file) + 'format' (md|csv|json|ndjson) import a whole-vambrace snapshot as a NEW vambrace - the mythos shape is required (stack-shaped files are rejected), entity UUIDs are preserved verbatim (reblades, log refs, and the graph land intact), value registers are upserted from the imported rows, one genesis log row (area 'acquire') is minted, and the effective saga (supplied > file-carried > none) conflict-checks before the mint. register_autoexport, deregister_autoexport, and furnish are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and furnish. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately; root = the literal 'mythos' snapshots the whole vambrace (all eight spaces + meta). Both are read-only against the vambrace (no register row, no log, no stored signature). The lifecycle actions manage the file location, which IS the state: waylay is key-bearing, live keys only, with REQUIRED emit_path + emit_format — an inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir; recover is key-bearing, waylaid keys only — moves the file back and resets the dismantle count; dismantle is key-bearing, waylaid keys only — requests 1-2 warn (dismantled: false) and request 3 destroys (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows (acquire's genesis row is the one exception). See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -813,6 +813,7 @@ TOOLS = [
                         "equip",
                         "inventory",
                         "saga",
+                        "acquire",
                         "register_autoexport",
                         "deregister_autoexport",
                         "furnish",
@@ -820,7 +821,7 @@ TOOLS = [
                         "recover",
                         "dismantle"
                     ],
-                    "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. register_autoexport / deregister_autoexport / furnish: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and furnish additionally require 'emit_format'. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately, read-only against the vambrace (no register row, no log, no signature; reblade_fidelity selects the reblade layer for this render, default out); root = the literal 'mythos' snapshots the whole vambrace (reblade_fidelity is rejected if supplied). waylay: key-bearing, live keys only, REQUIRED 'emit_path' + 'emit_format' — the inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir (the suspended autoexport register count is info, not rejection). recover: key-bearing, waylaid keys only — moves the file back and resets the dismantle count (the intent chain broke). dismantle: key-bearing, waylaid keys only — requests 1-2 succeed with escalating warnings (dismantled: false) naming recover as the escape hatch; request 3 destroys the waylaid database and its ledger entries (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows."
+                    "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. acquire: key-less - REQUIRED 'path' + 'format', imports a whole-vambrace snapshot (the mythos shape; stack-shaped rejected) as a new vambrace with a genesis log row; the effective saga (supplied > file-carried > none) conflict-checks pre-mint. register_autoexport / deregister_autoexport / furnish: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and furnish additionally require 'emit_format'. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately, read-only against the vambrace (no register row, no log, no signature; reblade_fidelity selects the reblade layer for this render, default out); root = the literal 'mythos' snapshots the whole vambrace (reblade_fidelity is rejected if supplied). waylay: key-bearing, live keys only, REQUIRED 'emit_path' + 'emit_format' — the inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir (the suspended autoexport register count is info, not rejection). recover: key-bearing, waylaid keys only — moves the file back and resets the dismantle count (the intent chain broke). dismantle: key-bearing, waylaid keys only — requests 1-2 succeed with escalating warnings (dismantled: false) naming recover as the escape hatch; request 3 destroys the waylaid database and its ledger entries (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows (acquire's genesis row is the one exception)."
                 },
                 "vambrace": {
                     "type": "string",
@@ -862,7 +863,22 @@ TOOLS = [
                 },
                 "saga": {
                     "type": "string",
-                    "description": "For action=equip only: the human-facing name of the new vambrace — stored in the database itself (meta 'saga'; it travels with the file) and mirrored in the armory ledger. Omitted = no saga; a conflicting name (case-insensitive, across live and waylaid) rejects before anything is minted. The future acquire action (snapshot import) takes the same argument. Not used by any other action."
+                    "description": "For action=equip or acquire: the human-facing name of the vambrace - stored in the database itself (meta 'saga'; it travels with the file) and mirrored in the armory ledger. equip: omitted = no saga. acquire: omitted = the file-carried saga (or none); '' = deliberate none (beats file-carried); a conflicting name (case-insensitive, across live and waylaid) rejects before anything is minted. Not used by any other action."
+                },
+                "path": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "For action=acquire only: source file path of the whole-vambrace (mythos) snapshot to import, used exactly as given; the file must exist and be readable. acquire mints a NEW vambrace key - the key carried by the file is provenance, not identity. Not used by any other action."
+                },
+                "format": {
+                    "type": "string",
+                    "enum": [
+                        "md",
+                        "csv",
+                        "json",
+                        "ndjson"
+                    ],
+                    "description": "For action=acquire only: the snapshot format (the same codec as furnish: md|csv|json|ndjson). Not used by any other action."
                 }
             },
             "required": [
@@ -937,7 +953,9 @@ def _tool_error(code, message):
 def _call_vambrace(armory_dir, arguments):
     """The vambrace verb itself: armory control (SPEC 1.9, 3.18).
 
-    Key-less: ``equip`` (mint a vambrace; optional ``saga``) and
+    Key-less: ``equip`` (mint a vambrace; optional ``saga``),
+    ``acquire`` (import a whole-vambrace snapshot file as a NEW vambrace
+    -- the one action that mints a db log row: the genesis row), and
     ``inventory`` (list both populations). KEY-BEARING, validated fail-closed
     exactly like a routed verb: ``saga`` (works on live AND waylaid keys; an
     unknown key is not_found), ``register_autoexport``,
@@ -948,8 +966,9 @@ def _call_vambrace(armory_dir, arguments):
     keys only: snapshot, verify, move the db to the waylay dir),
     ``recover`` (waylaid keys only: move it back; the dismantle count
     resets), ``dismantle`` (waylaid keys only: requests 1-2 warn, request 3
-    destroys). Armory-level actions mint no db log rows; the ledger and the
-    responses are their record (draft, ratified 10.8).
+    destroys). Armory-level actions mint no db log rows (acquire's genesis
+    row is the one exception); the ledger and the responses are their
+    record (draft, ratified 10.8).
     """
     action = arguments.get("action")
     if action == "equip":
@@ -958,6 +977,8 @@ def _call_vambrace(armory_dir, arguments):
         return _call_inventory(armory_dir, arguments)
     if action == "saga":
         return _call_saga(armory_dir, arguments)
+    if action == "acquire":
+        return _call_acquire(armory_dir, arguments)
     if action == "register_autoexport":
         return _call_register_autoexport(armory_dir, arguments)
     if action == "deregister_autoexport":
@@ -973,7 +994,7 @@ def _call_vambrace(armory_dir, arguments):
     return _tool_error(
         "unsupported_action",
         f"unsupported vambrace action {action!r} — v1 supports: equip, "
-        "inventory, saga, register_autoexport, deregister_autoexport, "
+        "inventory, saga, acquire, register_autoexport, deregister_autoexport, "
         "furnish, waylay, recover, dismantle"), True
 
 
@@ -1021,6 +1042,94 @@ def _call_equip(armory_dir, arguments):
         if warning:
             payload["ledger_warning"] = warning
     return payload, False
+
+
+def _call_acquire(armory_dir, arguments):
+    """acquire (draft 5.4): key-less. Import a whole-vambrace (mythos)
+    snapshot file as a NEW vambrace. Every step before the mint is a pure
+    read/validate: the path is an existing readable file, the format is an
+    allowed codec, the file parses as the mythos shape (a stack-shaped
+    export is rejected verbatim), and the effective saga (supplied >
+    file-carried > none) conflict-checks case-insensitively across live +
+    waylaid. Only then is the key minted and the snapshot imported in one
+    transaction (entity UUIDs verbatim; value registers upserted; one
+    genesis log row, area 'acquire' -- the one db log row this action
+    mints; the ledger and the response carry the rest). A rejected or
+    failed acquire leaves nothing behind (equip's no-file-litter pattern)."""
+    path = arguments.get("path")
+    if not isinstance(path, str) or not path:
+        return _tool_error(
+            "validation_failed",
+            "path is required for acquire: a non-empty source file path "
+            "for the mythos snapshot"), True
+    if not os.path.isfile(path):
+        return _tool_error("not_found",
+                           f"acquire source not found: no file at {path!r}"), True
+    fmt = arguments.get("format")
+    if fmt not in autoexport.ALLOWED_FORMATS:
+        return _tool_error(
+            "validation_failed",
+            f"format for acquire must be one of "
+            f"{list(autoexport.ALLOWED_FORMATS)}: got {fmt!r}"), True
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, UnicodeDecodeError) as e:
+        return _tool_error("not_found",
+                           f"acquire source unreadable at {path!r}: "
+                           f"{type(e).__name__}"), True
+    try:
+        payload = snapshot.parse_mythos(text, fmt)
+    except ValueError as e:
+        return _tool_error("validation_failed", str(e)), True
+    saga = arguments.get("saga")
+    if saga is None:
+        saga = payload.get("saga") or None
+    elif not isinstance(saga, str):
+        return _tool_error(
+            "validation_failed",
+            "saga must be a string: omitted = the file-carried saga (or none)"), True
+    else:
+        saga = saga or None  # "" = deliberate none (beats the file-carried)
+    if saga is not None and not isinstance(saga, str):
+        return _tool_error(
+            "validation_failed",
+            f"file-carried saga is not a string: {saga!r}"), True
+    if saga:
+        offender = armory.find_saga_conflict(armory_dir, saga)
+        if offender is not None:
+            return _tool_error(
+                "duplicate_name",
+                f"saga {saga!r} already belongs to vambrace {offender}"), True
+    key = uuid7.new_uuid7()
+    db_path = os.path.join(armory_dir, key + ".db")
+    try:
+        result = snapshot.import_mythos(db_path, key, payload, path, saga)
+    except ValueError as e:
+        # no file litter: a rejected acquire leaves no partial vambrace behind
+        for name in (db_path, db_path + "-wal", db_path + "-shm"):
+            try:
+                os.remove(name)
+            except OSError:
+                pass
+        return _tool_error("validation_failed", str(e)), True
+    except sqlite3.Error as e:
+        for name in (db_path, db_path + "-wal", db_path + "-shm"):
+            try:
+                os.remove(name)
+            except OSError:
+                pass
+        return _tool_error("db_error", str(e)), True
+    response = {"key": key}
+    if saga:
+        response["saga"] = saga
+    response["imported"] = result["imported"]
+    response["log_id"] = result["log_id"]
+    if saga:
+        warning = armory.mirror_saga(armory_dir, key, saga)
+        if warning:
+            response["ledger_warning"] = warning
+    return response, False
 
 
 def _call_inventory(armory_dir, arguments):
