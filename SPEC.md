@@ -56,7 +56,7 @@ Every write transaction mints, in the same transaction:
   `op` ∈ `created` | `modified` | `deleted` | `referenced`.
   (`referenced` = e.g. the endpoints of a new reblade row.)
 
-The settled verb surface has **no log-write verb**: the timeline is the mechanical trace of the
+The settled verb surface has **no log-write verb**: there is no reason for a user to drive logs at all —
 system's own footprint.
 
 ### 1.6 Auto-linking
