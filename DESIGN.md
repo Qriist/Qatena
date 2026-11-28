@@ -255,8 +255,7 @@ The armory verb `vambrace` (multi-vambrace routing, above) hosts **10 actions**:
 - Armory-level invariants: the file location IS the lifecycle state (live at the armory top /
   waylaid / gone). Actions mint no db log rows (the armory ledger, `armory.json`, + the
   responses are their record) — `acquire`'s genesis row is the one exception — and `equip` /
-  `acquire` each seed the sidecar's one genesis row (the `history` birth frame; pre-build
-  vambraces carry none)
+  `acquire` each seed the sidecar's one genesis row (the `history` birth frame)
 
 **Chain writes**
 - `chain_put` — upsert by UUID or name; presence-mask fields (`name`, `intentions`, …); fresh UUIDv7 if absent. Renames and refiling are just this.

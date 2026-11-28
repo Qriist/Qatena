@@ -206,8 +206,8 @@ CREATE TABLE IF NOT EXISTS meta (
 )
 ```
 
-In `schema.STATEMENTS`, so `schema.bootstrap` (idempotent, runs on every routed open) migrates existing
-vambraces in place — no separate migration code. v1 has exactly one key: `k='saga'`. The in-db copy
+In `schema.STATEMENTS`, so `schema.bootstrap` (idempotent, runs on every routed open) applies it to
+whatever db files are present — no separate migration code. v1 has exactly one key: `k='saga'`. The in-db copy
 is the source of truth; the armory ledger is a display cache (§3.18).
 
 ### Non-core (creative-project tracking)
@@ -313,7 +313,7 @@ CREATE INDEX IF NOT EXISTS idx_deflected_writes_state ON deflected_writes (state
 ```
 
 Added to `schema.STATEMENTS`, so `schema.bootstrap` (idempotent, runs on every routed
-open) migrates existing vambraces in place — no separate migration code. Behavior: §3.20.
+open) applies it to whatever db files are present — no separate migration code. Behavior: §3.20.
 
 ## 3. Verb surface (20 MCP tools)
 
@@ -745,9 +745,9 @@ The sidecar is created **eagerly at birth**: `equip` and `acquire` seed it with 
 one-row **genesis record** (a vambrace-level frame — NOT a `revisions` row):
 `kind` (`equip` | `acquire`) · `detail` (acquire = the mythos source path;
 equip = null) · `log_id` (acquire = the main db's genesis log row, area
-`acquire`; equip = NULL — armory actions mint no db log rows) · `created`. A
-**pre-build vambrace** (sidecar missing at a routed open) gets the sidecar
-created and its schema bootstrapped **at open** with NO genesis row — the
+`acquire`; equip = NULL — armory actions mint no db log rows) · `created`. If the
+sidecar is missing at a routed open, it is created and its schema bootstrapped
+**at open** with NO genesis row — the
 response's `genesis` is null; no false birth claim.
 
 ```sql
@@ -833,7 +833,7 @@ promise that a dissolved header is recoverable via history stands on this.
 **Response shape** — `{genesis, revisions, trace}`:
 
 - `genesis` — the sidecar's one-row genesis record (the vambrace's birth) or `null`
-  (a pre-build vambrace). A frame: present even for dissolved entities, and never
+  (the sidecar was missing at a routed open; no birth to record). A frame: present even for dissolved entities, and never
   counted by `count` / `total`.
 - `revisions` — the limit-governed page of field rows (default 20; `limit` as in
   the schema): `field`, `old`, `new`, `created`, plus the JOINED log's resolved
@@ -1066,9 +1066,8 @@ small read-write transaction (store `last_sig` / `last_emitted`, mint the export
 area `autoexport`, title `autoexport <root-space> <root-uuid> -> <emit_path>`, root ref op
 `referenced`). Cascade: deleting a registered root (`chain_delete` / `blade_delete`) deletes
 its register rows in the same transaction — a dead root can never re-trigger, and UUIDs are
-never reused. Pre-existing vambraces (bootstrapped before `reblade_fidelity`) are migrated in
-place by `schema.bootstrap` on next open: the column is added with default `out`,
-idempotently.
+never reused. Any db file lacking the column gets it added by `schema.bootstrap`
+on next open, with default `out`, idempotently.
 
 **Waylay lifecycle.** The `waylay` / `recover` / `dismantle` actions suspend and end a
 vambrace. They act on the file location, which IS the state (§1.9), and mint no db log rows.
