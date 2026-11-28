@@ -1171,8 +1171,6 @@ The write surface for the `open_item` space — the human-driven space where the
 caretaker. A single `action`-driven verb (as `vambrace` is): actions `put` | `delete`; any
 other action fails `validation_failed`.
 
-The seven freeform fields are defined in §2 (Non-core, `open_items`); on the verb they arrive as OPTIONAL fields with the `freeform_` prefix dropped.
-
 | rule | settled behavior |
 |---|---|
 | minimal call | `vambrace` + `action` + `id` on an existing item (routing key, operation, target); on a **mint** `name` takes `id`’s place — the name is the creation key, `id` is minted |
@@ -1237,6 +1235,10 @@ check is a no-op for them).
   }
 }
 ```
+
+The seven optional freeform fields are provided to the user as individually
+updateable convenience trackers. Qatena performs no enforcement or validation of
+these values beyond the advertised insert-level protections.
 
 ### 3.20 `deflected_write`
 
