@@ -5,9 +5,14 @@ bookkeeping (phase 3). Covers: ledger write/read/atomic + rebuild +
 fail-closed display; saga set/clear/no-change/self-exclusion/
 conflict-names-offender/waylaid-target/ledger-warning; inventory both
 populations/strays/counts/rebuild flag; equip saga conflict pre-mint with no
-file litter + response shape. Unit level: server._call_vambrace +
-qatena.armory against a temp armory dir; the stdio schema pin lives in
-tests/test_server.py.
+file litter + response shape. Phase 3 rows: waylay (snapshot + verify +
+move, all rejections with zero side effects, suspended-register info,
+occupied target, ledger-warning), recover (move back, count reset,
+occupied location, register note), dismantle (1-2-3 state machine,
+escalating warnings, live-key 'waylay first', fail-closed counts,
+ledger cleanup at destruction), and the inventory across every transition.
+Unit level: server._call_vambrace + qatena.armory against a temp armory dir;
+the stdio schema pin lives in tests/test_server.py.
 """
 import json
 import os
@@ -16,7 +21,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from qatena import armory, db, schema, server
+from qatena import armory, db, schema, server, snapshot
 from qatena.uuid7 import new_uuid7
 from helpers import ISO_RE
 
@@ -83,6 +88,24 @@ class Base(unittest.TestCase):
         conn = db.connect(self._dbpath(key))
         try:
             return conn.execute("SELECT COUNT(*) c FROM logs").fetchone()["c"]
+        finally:
+            conn.close()
+
+    def emit_path(self, name="snap.json"):
+        return os.path.join(self.armory, name)
+
+    def plant_register(self, key):
+        """One autoexport register row (no write verb covers it): the
+        waylay/recover suspended-register paths."""
+        conn = db.connect(self._dbpath(key))
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO autoexport_registers "
+                "(root_uuid, emit_path, emit_format, created) "
+                "VALUES (?, ?, ?, ?)",
+                (key, os.path.join(self.armory, "x.md"), "md", db.now_ns()))
+            conn.execute("COMMIT")
         finally:
             conn.close()
 
@@ -423,6 +446,475 @@ class MetaSchema(Base):
         finally:
             conn.close()
         self.assertEqual(self.db_saga(key), "X")
+
+
+class Waylay(Base):
+    """Phase 3 (draft 5.6): waylay — suspend a live vambrace: inline mythos
+    snapshot, verified non-empty, then the db moves to the waylay dir.
+    All-or-nothing against the armory; no db log row."""
+
+    def waylay(self, key, **extra):
+        return self.call(dict({"action": "waylay", "vambrace": key,
+                               "emit_path": self.emit_path(),
+                               "emit_format": "json"}, **extra))
+
+    def test_happy_path_moves_file_and_lands_snapshot(self):
+        key = self.make(saga="The Forge")
+        with open(self.live_path(key), "rb") as f:
+            before = f.read()
+        emit = self.emit_path()
+        payload, is_error = self.waylay(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertEqual(payload, {
+            "key": key,
+            "waylaid": True,
+            "export": {"path": emit, "bytes": os.path.getsize(emit)},
+            "suspended_autoexport_registers": 0,
+        })
+        self.assertFalse(os.path.exists(self.live_path(key)))
+        self.assertTrue(os.path.isfile(self.waylay_path(key)))
+        with open(self.waylay_path(key), "rb") as f:
+            self.assertEqual(f.read(), before)  # the db was never written
+        with open(emit, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+        self.assertEqual(snap["key"], key)
+        self.assertEqual(snap["saga"], "The Forge")
+        self.assertEqual(set(snap["spaces"]),
+                         {"chains", "blades", "reblades", "intentions",
+                          "open_items", "rulings", "terms", "logs"})
+        ledger = self.read_ledger()
+        self.assertEqual(ledger["sagas"], {key: "The Forge"})
+        entry = ledger["waylays"][key]
+        self.assertRegex(entry["waylaid_at"], ISO_RE)
+        self.assertEqual(entry["dismantle_requests"], [])
+        self.assertEqual(self.db_log_count(key), 0)  # no log row minted
+
+    def test_suspended_registers_are_reported_with_note(self):
+        key = self.make()
+        self.plant_register(key)
+        payload, is_error = self.waylay(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertEqual(payload["suspended_autoexport_registers"], 1)
+        self.assertIn("note", payload)
+        self.assertIn("1 autoexport register", payload["note"])
+        # the register row rides with the file
+        conn = db.connect(self.waylay_path(key))
+        try:
+            c = conn.execute(
+                "SELECT COUNT(*) c FROM autoexport_registers").fetchone()["c"]
+        finally:
+            conn.close()
+        self.assertEqual(c, 1)
+
+    def test_already_waylaid_is_validation_failed(self):
+        key = self.make()
+        self.waylaid(key)
+        payload, is_error = self.waylay(key)
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "validation_failed")
+        self.assertIn("already waylaid", payload["error"]["message"])
+        self.assertTrue(os.path.isfile(self.waylay_path(key)))
+        self.assertFalse(os.path.exists(self.emit_path()))
+
+    def test_unknown_key_is_not_found(self):
+        payload, is_error = self.waylay(new_uuid7())
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "not_found")
+
+    def test_bad_emit_params_reject_with_zero_side_effects(self):
+        key = self.make(saga="The Forge")
+        with open(self.live_path(key), "rb") as f:
+            before = f.read()
+        ledger_before = self.read_ledger()
+        for extra in (
+                {"emit_path": None},
+                {"emit_path": ""},
+                {"emit_path": 42},
+                {"emit_format": "json"},
+                {"emit_path": self.emit_path()},
+                {"emit_path": self.emit_path(), "emit_format": "docx"},
+                {"emit_path": self.emit_path(), "emit_format": None}):
+            payload, is_error = self.call(dict(
+                {"action": "waylay", "vambrace": key}, **extra))
+            self.assertTrue(is_error, repr(extra))
+            self.assertEqual(payload["error"]["code"], "validation_failed",
+                             repr(extra))
+        with open(self.live_path(key), "rb") as f:
+            self.assertEqual(f.read(), before)  # byte-identical, untouched
+        self.assertFalse(os.path.exists(self.waylay_path(key)))
+        self.assertEqual(self.read_ledger(), ledger_before)  # unchanged
+
+    def test_missing_parent_rejects_with_zero_side_effects(self):
+        key = self.make()
+        with open(self.live_path(key), "rb") as f:
+            before = f.read()
+        payload, is_error = self.call({
+            "action": "waylay", "vambrace": key,
+            "emit_path": os.path.join(self.armory, "no-such-dir", "s.json"),
+            "emit_format": "json"})
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "validation_failed")
+        self.assertIn("parent directory", payload["error"]["message"])
+        with open(self.live_path(key), "rb") as f:
+            self.assertEqual(f.read(), before)
+        self.assertFalse(os.path.exists(self.waylay_path(key)))
+        self.assertFalse(os.path.exists(
+            os.path.join(self.armory, "no-such-dir")))  # never created
+
+    def test_snapshot_failure_stays_live(self):
+        key = self.make()
+        with mock.patch.object(snapshot, "write_mythos",
+                               side_effect=OSError("disk full")):
+            payload, is_error = self.waylay(key)
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "export_failed")
+        self.assertIn("waylay snapshot failed", payload["error"]["message"])
+        self.assertTrue(os.path.isfile(self.live_path(key)))
+        self.assertFalse(os.path.exists(self.waylay_path(key)))
+        self.assertIsNone(self.read_ledger())
+
+    def test_verification_failure_stays_live_without_cleanup(self):
+        key = self.make()
+        emit = self.emit_path()
+        with open(emit, "w", encoding="utf-8") as f:
+            f.write("pre-existing")
+
+        def wipe(path, k, p, fmt):
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("")
+            return 0
+
+        with mock.patch.object(snapshot, "write_mythos", side_effect=wipe):
+            payload, is_error = self.call({
+                "action": "waylay", "vambrace": key,
+                "emit_path": emit, "emit_format": "json"})
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "export_failed")
+        self.assertIn("verification failed", payload["error"]["message"])
+        self.assertTrue(os.path.isfile(self.live_path(key)))
+        self.assertFalse(os.path.exists(self.waylay_path(key)))
+        self.assertTrue(os.path.exists(emit))  # never cleaned up
+        self.assertEqual(os.path.getsize(emit), 0)
+
+    def test_occupied_target_rejects_the_impossible_state(self):
+        key = self.make()
+        os.makedirs(os.path.join(self.armory, armory.WAYLAY_DIR),
+                    exist_ok=True)
+        with open(self.waylay_path(key), "wb") as f:
+            f.write(b"occupant")
+        payload, is_error = self.waylay(key)
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "validation_failed")
+        self.assertIn("occupied", payload["error"]["message"])
+        self.assertTrue(os.path.isfile(self.live_path(key)))
+        with open(self.waylay_path(key), "rb") as f:
+            self.assertEqual(f.read(), b"occupant")
+
+    def test_failed_ledger_write_warns_but_never_fails(self):
+        key = self.make()
+        with mock.patch.object(
+                armory, "write_ledger",
+                return_value="armory ledger armory.json write failed "
+                             "(simulated)") as w:
+            payload, is_error = self.waylay(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertTrue(os.path.isfile(self.waylay_path(key)))  # truth
+        self.assertIn("ledger_warning", payload)
+        w.assert_called_once()
+
+    def test_fail_closed_routing_validation(self):
+        for args, code in (
+                ({}, "missing_vambrace"),
+                ({"vambrace": ""}, "missing_vambrace"),
+                ({"vambrace": 42}, "missing_vambrace"),
+                ({"vambrace": "not-a-uuid"}, "malformed_vambrace")):
+            payload, is_error = self.call(dict({"action": "waylay"}, **args))
+            self.assertTrue(is_error, repr(args))
+            self.assertEqual(payload["error"]["code"], code, repr(args))
+
+
+class Recover(Base):
+    """Phase 3 (draft 5.7): recover — move a waylaid vambrace back; the
+    dismantle count resets (the intent chain broke)."""
+
+    def waylaid_with(self, key, requests=()):
+        self.waylaid(key)
+        ledger = self.read_ledger() or {"sagas": {}, "waylays": {}}
+        ledger["waylays"][key] = {
+            "waylaid_at": "2026-01-01T00:00:00.000Z",
+            "dismantle_requests": list(requests)}
+        armory.write_ledger(self.armory, ledger)
+
+    def recover(self, key):
+        return self.call({"action": "recover", "vambrace": key})
+
+    def test_happy_path_moves_back_and_resets(self):
+        key = self.make(saga="Waylaid")
+        self.waylaid_with(key, ["t1", "t2"])
+        with open(self.waylay_path(key), "rb") as f:
+            before = f.read()
+        payload, is_error = self.recover(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertEqual(
+            payload, {"key": key, "recovered": True, "count_reset": True})
+        self.assertTrue(os.path.isfile(self.live_path(key)))
+        self.assertFalse(os.path.exists(self.waylay_path(key)))
+        with open(self.live_path(key), "rb") as f:
+            self.assertEqual(f.read(), before)
+        ledger = self.read_ledger()
+        self.assertEqual(ledger["waylays"], {})      # count reset
+        self.assertEqual(ledger["sagas"], {key: "Waylaid"})
+        self.assertEqual(self.db_log_count(key), 0)
+
+    def test_no_requests_gives_count_reset_false(self):
+        key = self.make()
+        self.waylaid_with(key)
+        payload, is_error = self.recover(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertEqual(
+            payload, {"key": key, "recovered": True, "count_reset": False})
+
+    def test_missing_ledger_entry_never_blocks_the_move(self):
+        key = self.make()
+        self.waylaid(key)               # file moved, no ledger entry at all
+        payload, is_error = self.recover(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertEqual(
+            payload, {"key": key, "recovered": True, "count_reset": False})
+        self.assertTrue(os.path.isfile(self.live_path(key)))
+        self.assertIsNone(self.read_ledger())  # nothing to rewrite
+
+    def test_live_key_is_not_found(self):
+        key = self.make()
+        payload, is_error = self.recover(key)
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "not_found")
+        self.assertTrue(os.path.isfile(self.live_path(key)))
+
+    def test_unknown_key_is_not_found(self):
+        payload, is_error = self.recover(new_uuid7())
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "not_found")
+
+    def test_occupied_live_location_rejects(self):
+        key = self.make()
+        self.waylaid_with(key)
+        with open(self.live_path(key), "wb") as f:
+            f.write(b"occupant")
+        with open(self.waylay_path(key), "rb") as f:
+            waylaid_before = f.read()
+        payload, is_error = self.recover(key)
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "validation_failed")
+        self.assertIn("occupied", payload["error"]["message"])
+        with open(self.waylay_path(key), "rb") as f:
+            self.assertEqual(f.read(), waylaid_before)  # untouched
+        with open(self.live_path(key), "rb") as f:
+            self.assertEqual(f.read(), b"occupant")
+
+    def test_register_note_on_recover(self):
+        key = self.make()
+        self.plant_register(key)
+        self.waylaid(key)
+        payload, is_error = self.recover(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertIn("note", payload)
+        self.assertIn("1 autoexport register", payload["note"])
+        self.assertIn("resume", payload["note"])
+
+    def test_fail_closed_routing_validation(self):
+        for args, code in (
+                ({}, "missing_vambrace"),
+                ({"vambrace": ""}, "missing_vambrace"),
+                ({"vambrace": 42}, "missing_vambrace"),
+                ({"vambrace": "not-a-uuid"}, "malformed_vambrace")):
+            payload, is_error = self.call(dict({"action": "recover"}, **args))
+            self.assertTrue(is_error, repr(args))
+            self.assertEqual(payload["error"]["code"], code, repr(args))
+
+
+class Dismantle(Base):
+    """Phase 3 (draft 5.8): dismantle — the multi-step destruction process.
+    Requests 1-2 succeed with escalating warnings; request 3 destroys."""
+
+    def waylaid_via(self, key, requests=()):
+        payload, is_error = self.call({
+            "action": "waylay", "vambrace": key,
+            "emit_path": self.emit_path(), "emit_format": "json"})
+        self.assertFalse(is_error, repr(payload))
+        if requests:
+            ledger = self.read_ledger()
+            ledger["waylays"][key]["dismantle_requests"] = list(requests)
+            armory.write_ledger(self.armory, ledger)
+
+    def dismantle(self, key):
+        return self.call({"action": "dismantle", "vambrace": key})
+
+    def test_state_machine_warns_then_destroys(self):
+        key = self.make(saga="The Forge")
+        self.waylaid_via(key)
+        p1, e1 = self.dismantle(key)
+        self.assertFalse(e1, repr(p1))
+        self.assertEqual(p1, {
+            "key": key, "dismantled": False, "request": 1, "of": 3,
+            "warning": (
+                "request 1 of 3 for 'The Forge': nothing destroyed. The "
+                "next request will still only warn; the THIRD request "
+                "destroys the waylaid database permanently. To stop, "
+                "recover this vambrace (action=recover, "
+                f"vambrace={key}).")})
+        self.assertTrue(os.path.isfile(self.waylay_path(key)))
+        self.assertEqual(
+            len(self.read_ledger()["waylays"][key]["dismantle_requests"]), 1)
+        p2, e2 = self.dismantle(key)
+        self.assertFalse(e2, repr(p2))
+        self.assertEqual((p2["key"], p2["dismantled"], p2["request"],
+                          p2["of"]), (key, False, 2, 3))
+        self.assertEqual(p2["warning"],
+                         "request 2 of 3 for 'The Forge': nothing destroyed "
+                         "yet. The NEXT request will destroy the waylaid "
+                         "database PERMANENTLY. To stop, recover this "
+                         f"vambrace (action=recover, vambrace={key}).")
+        self.assertTrue(os.path.isfile(self.waylay_path(key)))
+        self.assertEqual(
+            len(self.read_ledger()["waylays"][key]["dismantle_requests"]), 2)
+        p3, e3 = self.dismantle(key)
+        self.assertFalse(e3, repr(p3))
+        self.assertEqual(p3, {"key": key, "dismantled": True})
+        self.assertFalse(os.path.exists(self.waylay_path(key)))
+        self.assertFalse(os.path.exists(self.live_path(key)))
+        ledger = self.read_ledger()
+        self.assertEqual(ledger["waylays"], {})
+        self.assertEqual(ledger["sagas"], {})  # the ghost saga is removed
+
+    def test_warning_names_the_key_without_a_saga(self):
+        key = self.make()
+        self.waylaid_via(key)
+        p1, e1 = self.dismantle(key)
+        self.assertFalse(e1, repr(p1))
+        self.assertTrue(
+            p1["warning"].startswith(f"request 1 of 3 for key {key}: "))
+
+    def test_live_key_rejected_waylay_first(self):
+        key = self.make(saga="The Forge")
+        payload, is_error = self.dismantle(key)
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "validation_failed")
+        self.assertIn("waylay", payload["error"]["message"])
+        self.assertTrue(os.path.isfile(self.live_path(key)))
+
+    def test_unknown_key_is_not_found(self):
+        payload, is_error = self.dismantle(new_uuid7())
+        self.assertTrue(is_error)
+        self.assertEqual(payload["error"]["code"], "not_found")
+
+    def test_corrupt_ledger_zeroes_the_count_fail_closed(self):
+        key = self.make(saga="The Forge")
+        self.waylaid_via(key, ["t1", "t2"])   # one more request would destroy
+        self.corrupt_ledger()
+        payload, is_error = self.dismantle(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertEqual(payload["dismantled"], False)  # never destroys
+        self.assertEqual(payload["request"], 1)
+        self.assertEqual(payload["of"], 3)
+        self.assertTrue(os.path.isfile(self.waylay_path(key)))
+        entry = self.read_ledger()["waylays"][key]
+        self.assertEqual(len(entry["dismantle_requests"]), 1)
+        self.assertRegex(entry["waylaid_at"], ISO_RE)  # refreshed
+
+    def test_tampered_count_is_zeroed_with_a_ledger_warning(self):
+        key = self.make(saga="The Forge")
+        self.waylaid_via(key)
+        ledger = self.read_ledger()
+        ledger["waylays"][key]["dismantle_requests"] = ["a", "b", "c"]
+        armory.write_ledger(self.armory, ledger)
+        payload, is_error = self.dismantle(key)
+        self.assertFalse(is_error, repr(payload))
+        self.assertEqual(payload["request"], 1)
+        self.assertIn("anomalous", payload["ledger_warning"])
+        self.assertIn("fail-closed", payload["ledger_warning"])
+        self.assertTrue(os.path.isfile(self.waylay_path(key)))
+        self.assertEqual(
+            len(self.read_ledger()["waylays"][key]["dismantle_requests"]), 1)
+
+    def test_malformed_request_shapes_zero_the_count(self):
+        for bad in ("two", ["t1", 42], ["t1", ""], None):
+            key = self.make()
+            self.waylaid_via(key)
+            ledger = self.read_ledger()
+            ledger["waylays"][key]["dismantle_requests"] = bad
+            armory.write_ledger(self.armory, ledger)
+            payload, is_error = self.dismantle(key)
+            self.assertFalse(is_error, repr(bad))
+            self.assertEqual(payload["request"], 1, repr(bad))
+            self.assertNotIn("ledger_warning", payload)
+            self.assertTrue(os.path.isfile(self.waylay_path(key)),
+                            repr(bad))
+
+    def test_recover_resets_the_count_for_the_next_waylay(self):
+        key = self.make(saga="The Forge")
+        self.waylaid_via(key)
+        self.dismantle(key)
+        self.dismantle(key)
+        pr, er = self.call({"action": "recover", "vambrace": key})
+        self.assertFalse(er, repr(pr))
+        self.assertTrue(pr["count_reset"])
+        p2, e2 = self.call({
+            "action": "waylay", "vambrace": key,
+            "emit_path": self.emit_path("snap2.json"),
+            "emit_format": "json"})
+        self.assertFalse(e2, repr(p2))
+        p3, e3 = self.dismantle(key)
+        self.assertFalse(e3, repr(p3))
+        self.assertEqual(p3["request"], 1)  # fresh count
+
+    def test_fail_closed_routing_validation(self):
+        for args, code in (
+                ({}, "missing_vambrace"),
+                ({"vambrace": ""}, "missing_vambrace"),
+                ({"vambrace": 42}, "missing_vambrace"),
+                ({"vambrace": "not-a-uuid"}, "malformed_vambrace")):
+            payload, is_error = self.call(
+                dict({"action": "dismantle"}, **args))
+            self.assertTrue(is_error, repr(args))
+            self.assertEqual(payload["error"]["code"], code, repr(args))
+
+
+class LifecycleInventory(Base):
+    """The phase-1 inventory action reflects every phase-3 transition."""
+
+    def test_inventory_tracks_waylay_dismantle_and_destroy(self):
+        key = self.make(saga="The Forge")
+        p, e = self.call({"action": "inventory"})
+        self.assertFalse(e, repr(p))
+        self.assertEqual([x["key"] for x in p["live"]], [key])
+        self.assertEqual(p["waylaid"], [])
+        p, e = self.call({"action": "waylay", "vambrace": key,
+                          "emit_path": self.emit_path(),
+                          "emit_format": "json"})
+        self.assertFalse(e, repr(p))
+        p, e = self.call({"action": "inventory"})
+        self.assertFalse(e, repr(p))
+        self.assertEqual(p["live"], [])
+        w = p["waylaid"][0]
+        self.assertEqual(w["key"], key)
+        self.assertEqual(w["saga"], "The Forge")
+        self.assertRegex(w["waylaid_at"], ISO_RE)
+        self.assertEqual(w["dismantle_requests"], 0)
+        self.assertEqual(w["dismantles_until_destroy"], 3)
+        self.call({"action": "dismantle", "vambrace": key})
+        self.call({"action": "dismantle", "vambrace": key})
+        p, e = self.call({"action": "inventory"})
+        self.assertFalse(e, repr(p))
+        w = p["waylaid"][0]
+        self.assertEqual(w["dismantle_requests"], 2)
+        self.assertEqual(w["dismantles_until_destroy"], 1)
+        p, e = self.call({"action": "dismantle", "vambrace": key})
+        self.assertFalse(e, repr(p))
+        self.assertTrue(p["dismantled"])
+        p, e = self.call({"action": "inventory"})
+        self.assertEqual(p, {"live": [], "waylaid": []})
+        self.assertEqual(self.read_ledger(), {"sagas": {}, "waylays": {}})
 
 
 if __name__ == "__main__":

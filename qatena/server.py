@@ -803,7 +803,7 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. register_autoexport, deregister_autoexport, and furnish are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and furnish. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately; root = the literal 'mythos' snapshots the whole vambrace (all eight spaces + meta). Both are read-only against the vambrace (no register row, no log, no stored signature). Armory-level actions mint no db log rows. See SPEC 3.18.",
+        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. register_autoexport, deregister_autoexport, and furnish are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and furnish. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately; root = the literal 'mythos' snapshots the whole vambrace (all eight spaces + meta). Both are read-only against the vambrace (no register row, no log, no stored signature). The lifecycle actions manage the file location, which IS the state: waylay is key-bearing, live keys only, with REQUIRED emit_path + emit_format — an inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir; recover is key-bearing, waylaid keys only — moves the file back and resets the dismantle count; dismantle is key-bearing, waylaid keys only — requests 1-2 warn (dismantled: false) and request 3 destroys (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows. See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -815,14 +815,17 @@ TOOLS = [
                         "saga",
                         "register_autoexport",
                         "deregister_autoexport",
-                        "furnish"
+                        "furnish",
+                        "waylay",
+                        "recover",
+                        "dismantle"
                     ],
-                    "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. register_autoexport / deregister_autoexport / furnish: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and furnish additionally require 'emit_format'. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately, read-only against the vambrace (no register row, no log, no signature; reblade_fidelity selects the reblade layer for this render, default out); root = the literal 'mythos' snapshots the whole vambrace (reblade_fidelity is rejected if supplied). Armory-level actions mint no db log rows."
+                    "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. register_autoexport / deregister_autoexport / furnish: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and furnish additionally require 'emit_format'. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately, read-only against the vambrace (no register row, no log, no signature; reblade_fidelity selects the reblade layer for this render, default out); root = the literal 'mythos' snapshots the whole vambrace (reblade_fidelity is rejected if supplied). waylay: key-bearing, live keys only, REQUIRED 'emit_path' + 'emit_format' — the inline whole-vambrace snapshot (root = 'mythos') to emit_path, verified non-empty, before the db moves to the server-controlled waylay dir (the suspended autoexport register count is info, not rejection). recover: key-bearing, waylaid keys only — moves the file back and resets the dismantle count (the intent chain broke). dismantle: key-bearing, waylaid keys only — requests 1-2 succeed with escalating warnings (dismantled: false) naming recover as the escape hatch; request 3 destroys the waylaid database and its ledger entries (a live key is rejected with 'waylay first'). Armory-level actions mint no db log rows."
                 },
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For the key-bearing actions (register_autoexport / deregister_autoexport / furnish / saga): the vambrace's key (returned by action=equip; saga also accepts waylaid keys). Not used by equip or inventory."
+                    "description": "For the key-bearing actions (register_autoexport / deregister_autoexport / furnish / saga / waylay / recover / dismantle): the vambrace's key (returned by action=equip; saga accepts live or waylaid keys; waylay takes live keys only; recover and dismantle take waylaid keys only). Not used by equip or inventory."
                 },
                 "root": {
                     "type": "string",
@@ -831,7 +834,7 @@ TOOLS = [
                 "emit_path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "For register_autoexport / deregister_autoexport / furnish: destination file path, used exactly as given; the parent directory must exist. Not used by equip."
+                    "description": "For register_autoexport / deregister_autoexport / furnish / waylay: destination file path, used exactly as given; the parent directory must exist. Not used by equip, inventory, saga, recover, or dismantle."
                 },
                 "emit_format": {
                     "type": "string",
@@ -841,7 +844,7 @@ TOOLS = [
                         "json",
                         "ndjson"
                     ],
-                    "description": "For register_autoexport and furnish only: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister."
+                    "description": "For register_autoexport, furnish, and waylay: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister."
                 },
                 "reblade_fidelity": {
                     "type": "string",
@@ -941,8 +944,12 @@ def _call_vambrace(armory_dir, arguments):
     ``deregister_autoexport``, and ``furnish`` (the renamed one-shot export:
     root = a live uuid renders that stack, root = 'mythos' snapshots the
     whole vambrace; read-only against the vambrace -- no register row, no log
-    row, no stored signature). Armory-level actions mint no db log rows; the
-    ledger and the responses are their record (draft, ratified 10.8).
+    row, no stored signature), and the lifecycle actions -- ``waylay`` (live
+    keys only: snapshot, verify, move the db to the waylay dir),
+    ``recover`` (waylaid keys only: move it back; the dismantle count
+    resets), ``dismantle`` (waylaid keys only: requests 1-2 warn, request 3
+    destroys). Armory-level actions mint no db log rows; the ledger and the
+    responses are their record (draft, ratified 10.8).
     """
     action = arguments.get("action")
     if action == "equip":
@@ -957,11 +964,17 @@ def _call_vambrace(armory_dir, arguments):
         return _call_deregister_autoexport(armory_dir, arguments)
     if action == "furnish":
         return _call_furnish(armory_dir, arguments)
+    if action == "waylay":
+        return _call_waylay(armory_dir, arguments)
+    if action == "recover":
+        return _call_recover(armory_dir, arguments)
+    if action == "dismantle":
+        return _call_dismantle(armory_dir, arguments)
     return _tool_error(
         "unsupported_action",
         f"unsupported vambrace action {action!r} — v1 supports: equip, "
         "inventory, saga, register_autoexport, deregister_autoexport, "
-        "furnish"), True
+        "furnish, waylay, recover, dismantle"), True
 
 
 def _call_equip(armory_dir, arguments):
@@ -1436,6 +1449,265 @@ def _call_furnish(armory_dir, arguments):
         "exported": True,
         "exported_at": exported_at,
     }, False
+
+
+def _lifecycle_key_check(key):
+    """The fail-closed missing/malformed key check for the lifecycle
+    actions (waylay/recover/dismantle): the exact messages of
+    _resolve_saga_target. Returns an error tuple, or None when the key is
+    well-formed (the file-location check differs per action)."""
+    if not isinstance(key, str) or not key:
+        return _tool_error("missing_vambrace",
+                           "vambrace routing key is required — create a vambrace with the "
+                           "vambrace verb (action=equip) first"), True
+    if not _VAMBRACE_KEY_RE.match(key):
+        return _tool_error("malformed_vambrace",
+                           f"vambrace key must be a UUIDv7 (36-char lowercase, version 7): got {key!r}"), True
+    return None
+
+
+def _register_count(path):
+    """The autoexport register count of a vambrace file, READ-ONLY (the
+    waylay/recover responses surface it as info: the registers ride with
+    the file). Returns (count, None) or (None, error-string)."""
+    conn = None
+    try:
+        conn = autoexport.open_readonly(path)
+        return conn.execute(
+            "SELECT COUNT(*) c FROM autoexport_registers").fetchone()["c"], None
+    except sqlite3.Error as e:
+        return None, str(e)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _call_waylay(armory_dir, arguments):
+    """waylay (draft 5.6): key-bearing, LIVE keys only. Suspends the
+    vambrace: an inline whole-vambrace snapshot (root='mythos') lands at
+    emit_path and is verified non-empty, and only then does the db move to
+    the server-controlled waylay dir (os.replace; this move alone creates
+    the dir). All-or-nothing against the armory: any rejection before the
+    move leaves the live file untouched (a successful snapshot may remain
+    on disk — a valid snapshot, kept; the server never deletes user files).
+    The ledger records waylays[key] = {waylaid_at, dismantle_requests: []}
+    (a failed mirror never fails the action — the file location is truth).
+    No db log row (the db is never written). The suspended autoexport
+    register count is info, not rejection: the registers ride with the
+    file, inert while waylaid, resuming on the next relevant write after
+    recover (deregistering requires recover first — it is a routed action).
+    """
+    key = arguments.get("vambrace")
+    err = _lifecycle_key_check(key)
+    if err is not None:
+        return err
+    live_path = os.path.join(armory_dir, key + ".db")
+    waylaid_path = os.path.join(armory_dir, armory.WAYLAY_DIR, key + ".db")
+    if not os.path.isfile(live_path):
+        if os.path.isfile(waylaid_path):
+            return _tool_error("validation_failed",
+                               f"vambrace '{key}' is already waylaid: recover it "
+                               "(action=recover) or continue dismantling "
+                               "(action=dismantle)"), True
+        return _tool_error("not_found",
+                           f"unknown vambrace '{key}': no live or waylaid "
+                           "database in the armory"), True
+    emit_path = arguments.get("emit_path")
+    if not isinstance(emit_path, str) or not emit_path:
+        return _tool_error("validation_failed",
+                           "emit_path is required for waylay: a non-empty "
+                           "destination file path for the pre-move snapshot"), True
+    parent = os.path.dirname(emit_path)
+    if parent and not os.path.isdir(parent):
+        return _tool_error("validation_failed",
+                           f"emit_path parent directory does not exist: {parent!r}"), True
+    emit_format = arguments.get("emit_format")
+    if emit_format not in autoexport.ALLOWED_FORMATS:
+        return _tool_error("validation_failed",
+                           f"emit_format for waylay must be one of "
+                           f"{list(autoexport.ALLOWED_FORMATS)}: got {emit_format!r}"), True
+    try:
+        written = snapshot.write_mythos(live_path, key, emit_path, emit_format)
+    except sqlite3.Error as e:
+        return _tool_error("db_error", str(e)), True
+    except Exception as e:
+        return _tool_error("export_failed",
+                           f"waylay snapshot failed: {type(e).__name__}: {e}"), True
+    try:
+        verified = os.path.isfile(emit_path) and os.path.getsize(emit_path) > 0
+    except OSError:
+        verified = False
+    if not verified:
+        return _tool_error("export_failed",
+                           f"waylay verification failed: the snapshot did not land "
+                           f"non-empty at {emit_path!r}; the vambrace stays live"), True
+    registers, err_msg = _register_count(live_path)
+    if err_msg is not None:
+        return _tool_error("db_error", err_msg), True
+    if os.path.exists(waylaid_path):
+        return _tool_error("validation_failed",
+                           f"waylay target occupied: {waylaid_path!r} already "
+                           "exists (impossible state; refusing)"), True
+    try:
+        os.makedirs(os.path.dirname(waylaid_path), exist_ok=True)
+        os.replace(live_path, waylaid_path)
+    except OSError as e:
+        return _tool_error("db_error",
+                           f"waylay move failed: {type(e).__name__}: {e}"), True
+    now = db.ns_to_iso(db.now_ns())
+    ledger, _ = armory.read_ledger(armory_dir)
+    ledger["waylays"][key] = {"waylaid_at": now, "dismantle_requests": []}
+    payload = {
+        "key": key,
+        "waylaid": True,
+        "export": {"path": emit_path, "bytes": written},
+        "suspended_autoexport_registers": registers,
+    }
+    if registers:
+        payload["note"] = (
+            f"{registers} autoexport register(s) ride with the vambrace "
+            "into the waylay dir: they will not update while waylaid and "
+            "resume on the next relevant write after recover. Nothing was "
+            "deleted.")
+    warning = armory.write_ledger(armory_dir, ledger)
+    if warning:
+        payload["ledger_warning"] = warning
+    return payload, False
+
+
+def _call_recover(armory_dir, arguments):
+    """recover (draft 5.7): key-bearing, WAYLAID keys only. Moves the db
+    back from the waylay dir to the armory top level (os.replace; the
+    armory location must be unoccupied — refusing to overwrite). The
+    ledger deletes waylays[key]: the dismantle count RESETS (the intent
+    chain broke; a later re-waylay starts fresh at 0). No db log row. The
+    autoexport register count is info: the registers ride back, exports
+    resume on the next relevant write. A missing ledger entry never blocks
+    the move — the file location is truth."""
+    key = arguments.get("vambrace")
+    err = _lifecycle_key_check(key)
+    if err is not None:
+        return err
+    live_path = os.path.join(armory_dir, key + ".db")
+    waylaid_path = os.path.join(armory_dir, armory.WAYLAY_DIR, key + ".db")
+    if not os.path.isfile(waylaid_path):
+        return _tool_error("not_found",
+                           f"unknown waylaid vambrace '{key}': no database in "
+                           "the waylay dir (waylay a live key first)"), True
+    if os.path.exists(live_path):
+        return _tool_error("validation_failed",
+                           f"armory location occupied: {live_path!r} already "
+                           "exists; refusing to overwrite (remove the live "
+                           "file by hand, then recover)"), True
+    registers, err_msg = _register_count(waylaid_path)
+    if err_msg is not None:
+        return _tool_error("db_error", err_msg), True
+    try:
+        os.replace(waylaid_path, live_path)
+    except OSError as e:
+        return _tool_error("db_error",
+                           f"recover move failed: {type(e).__name__}: {e}"), True
+    ledger, _ = armory.read_ledger(armory_dir)
+    entry = ledger["waylays"].pop(key, None)
+    warning = None
+    if entry is not None:
+        warning = armory.write_ledger(armory_dir, ledger)
+    payload = {
+        "key": key,
+        "recovered": True,
+        "count_reset": bool(entry and entry.get("dismantle_requests")),
+    }
+    if registers:
+        payload["note"] = (
+            f"{registers} autoexport register(s) ride back with the "
+            "vambrace: exports resume on the next relevant write.")
+    if warning:
+        payload["ledger_warning"] = warning
+    return payload, False
+
+
+def _call_dismantle(armory_dir, arguments):
+    """dismantle (draft 5.8): key-bearing, WAYLAID keys only (a live key
+    is rejected with 'waylay first' — the multi-step enforcement lives
+    here). Requests 1-2 SUCCEED (not errors) with escalating warnings
+    naming the saga, what the next request does, and recover <key> as the
+    escape hatch; nothing is destroyed. Request 3 destroys: the waylaid
+    db is deleted and the ledger loses waylays[key] + sagas[key] (a ghost
+    saga would reject future acquires of the same name). Registered emit
+    files on disk are orphaned — the server never deletes them. The count
+    N reads waylays[key].dismantle_requests STRICTLY (a list of non-empty
+    strings); any malformed shape, and a tampered list of >=
+    DISMANTLE_TOTAL, zero out fail-closed — uncertainty never destroys, it
+    only delays. No db log row."""
+    key = arguments.get("vambrace")
+    err = _lifecycle_key_check(key)
+    if err is not None:
+        return err
+    live_path = os.path.join(armory_dir, key + ".db")
+    waylaid_path = os.path.join(armory_dir, armory.WAYLAY_DIR, key + ".db")
+    if not os.path.isfile(waylaid_path):
+        if os.path.isfile(live_path):
+            return _tool_error("validation_failed",
+                               f"vambrace '{key}' is LIVE: waylay it first "
+                               "(action=waylay) — dismantle only acts on "
+                               "waylaid vambraces"), True
+        return _tool_error("not_found",
+                           f"unknown waylaid vambrace '{key}': no database in "
+                           "the waylay dir"), True
+    ledger, _ = armory.read_ledger(armory_dir)
+    entry = ledger["waylays"].get(key)
+    n, clean_requests, anomalous = 0, [], False
+    if isinstance(entry, dict):
+        requests = entry.get("dismantle_requests")
+        if isinstance(requests, list) and all(
+                isinstance(t, str) and t for t in requests):
+            if len(requests) < armory.DISMANTLE_TOTAL:
+                n = len(requests)
+                clean_requests = list(requests)
+            else:
+                anomalous = True
+    if n == armory.DISMANTLE_TOTAL - 1:
+        # the third request: the only destructive path
+        try:
+            os.remove(waylaid_path)
+        except OSError as e:
+            return _tool_error("db_error",
+                               f"dismantle failed: {type(e).__name__}: {e}"), True
+        ledger["waylays"].pop(key, None)
+        ledger["sagas"].pop(key, None)
+        warning = armory.write_ledger(armory_dir, ledger)
+        payload = {"key": key, "dismantled": True}
+        if warning:
+            payload["ledger_warning"] = warning
+        return payload, False
+    now = db.ns_to_iso(db.now_ns())
+    saga, _ = armory.read_db_saga(waylaid_path)
+    subject = f"'{saga}'" if saga else f"key {key}"
+    waylaid_at = entry.get("waylaid_at") if isinstance(entry, dict) else None
+    ledger["waylays"][key] = {
+        "waylaid_at": waylaid_at if isinstance(waylaid_at, str) else now,
+        "dismantle_requests": clean_requests + [now],
+    }
+    warning = armory.write_ledger(armory_dir, ledger)
+    if anomalous:
+        note = ("the recorded dismantle request count was anomalous; it was "
+                "zeroed fail-closed")
+        warning = f"{warning}; {note}" if warning else note
+    if n == 0:
+        msg = (f"request 1 of 3 for {subject}: nothing destroyed. The next "
+               "request will still only warn; the THIRD request destroys the "
+               "waylaid database permanently. To stop, recover this "
+               f"vambrace (action=recover, vambrace={key}).")
+    else:
+        msg = (f"request 2 of 3 for {subject}: nothing destroyed yet. The "
+               "NEXT request will destroy the waylaid database PERMANENTLY. "
+               f"To stop, recover this vambrace (action=recover, "
+               f"vambrace={key}).")
+    payload = {"key": key, "dismantled": False, "request": n + 1,
+               "of": armory.DISMANTLE_TOTAL, "warning": msg}
+    if warning:
+        payload["ledger_warning"] = warning
+    return payload, False
 
 
 def _cache_deflection(path, name, verb_args, code, message, op_index=None):
