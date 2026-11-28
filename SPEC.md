@@ -1,7 +1,6 @@
 # Qatena Spec — v1
 
 **Status:** implementable contract for the settled design in `DESIGN.md`.
-Resolutions the design left rough are marked **[resolution]** — the set of those is pending review.
 
 **Runtime:** Python 3, stdlib `sqlite3`, a single stdio MCP server process (goose extension).
 One database file per vambrace, created and owned by the server (§1.9, §3.18). The server is the **sole write
@@ -28,7 +27,7 @@ the autoexport child process' single small per-export transaction (§3.18).
 ### 1.3 Names and aliases
 
 - Every named entity's alias column is `UNIQUE` **within its own table** (space).
-- Uniqueness and matching are **case-insensitive** (`COLLATE NOCASE`) **[resolution e]**.
+- Uniqueness and matching are **case-insensitive** (`COLLATE NOCASE`).
 - **Cross-space collisions are allowed**: the same name may exist in multiple spaces (a name can
   carry real meaning at multiple strata). Consequence for auto-linking: an exact name match mints
   a `name-ref` to *every* entity bearing that name (at most one per space), and the response
@@ -43,7 +42,7 @@ the autoexport child process' single small per-export transaction (§3.18).
 - Reads (`get`, `search`, `list`, `reblades_of`, `follow`, `history`) are side-effect-free:
   they mint no logs and no `log_refs`.
 
-### 1.5 System-minted logs **[resolution d]**
+### 1.5 System-minted logs
 
 Every write transaction mints, in the same transaction:
 
@@ -81,9 +80,9 @@ system's own footprint.
   `open_items`, `rulings`, or `terms`. Reblades, logs, and state registers are **not** endpoints.
 - `reblades.src_uuid` / `dst_uuid` are validated **by the server**, not by foreign keys —
   the endpoint space is polymorphic.
-- Reblades carry **no UUID of their own**; identity is `(src_uuid, dst_uuid, kind)`
-  **[resolution a]** — the edge is a relationship between UUIDs, and the triple fully determines it:
-  a self-UUID would carry no identifying content of its own, an indirection onto the very triple that finds it.
+- Reblades carry **no UUID of their own**; identity is `(src_uuid, dst_uuid, kind)` — the edge is a
+  relationship between UUIDs, and the triple fully determines it: a self-UUID would carry no
+  identifying content of its own, an indirection onto the very triple that finds it.
 - Deleting a chain or blade cascade-deletes its **outgoing** reblades and **reports** incoming
   ones in the response (they may still be meaningful; retarget or remove explicitly).
 - `chain_merge` retargets reblades aimed at the dissolved header onto the survivor; the
@@ -169,7 +168,7 @@ CREATE TABLE chain_blades (
 );
 CREATE INDEX idx_blades_chain ON chain_blades (chain_id);
 
--- One total order per chain. `pos` is the design's INDEX: 0-based, gapless **[resolution f]**.
+-- One total order per chain. `pos` is the design's INDEX: 0-based, gapless.
 CREATE TABLE blade_order (
   chain_id TEXT(36) NOT NULL REFERENCES chain_headers(id) ON DELETE CASCADE,
   blade_id TEXT(36) NOT NULL REFERENCES chain_blades(id)  ON DELETE CASCADE,
@@ -178,7 +177,7 @@ CREATE TABLE blade_order (
   UNIQUE (chain_id, blade_id)
 );
 
-CREATE TABLE reblade_kinds (                        -- seeded register, extensible **[resolution b]**
+CREATE TABLE reblade_kinds (                        -- seeded register, extensible
   kind TEXT NOT NULL PRIMARY KEY
 );
 INSERT INTO reblade_kinds (kind) VALUES
@@ -1325,5 +1324,4 @@ re-validated against the current state).
 1. **UUID storage → `BLOB(16)`** — the project's finalizing step (storage-only; tool surface unchanged).
 2. **Agent-authored entries** — pattern resolved (decisions-as-blades under a designated intention — not a verb, not a `vambrace` action); open: the possibility of seeding the intention space with a few useful agent-specific entries (e.g. a designated agent-notes intention). v1's `logs` are system-minted only.
 3. **FTS5 for `search`** — only if LIKE-probe latency ever matters at this scale; if built, as a vambrace toggle (index tables in each `<key>.db`, maintained by the write verbs).
-4. **`SPEC.md` resolutions (a)–(f) pending review** — reblades carry no UUID (§1.7) · `reblade_kinds` register (§2) · intentions upserted via `chain_put.intentions` (§3.1) · system-minted logs (§1.5) · case-insensitive aliases (§1.3) · `blade_order.pos` naming (§2).
-5. **`conflict` + `depends-on` reblade kinds** — settled as context markers for the agent driving the system (user); pending: the two `reblade_kinds` rows, the `kind` enum in the reblade tool schemas, and server validation.
+4. **`conflict` + `depends-on` reblade kinds** — settled as context markers for the agent driving the system (user); pending: the two `reblade_kinds` rows, the `kind` enum in the reblade tool schemas, and server validation.
