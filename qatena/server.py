@@ -13,7 +13,7 @@ import re
 import sqlite3
 import sys
 
-from . import __version__, armory, autoexport, db, schema, uuid7
+from . import __version__, armory, autoexport, db, schema, snapshot, uuid7
 from .verbs import VerbError, _WRITE_DISPATCH, _resolve_endpoint, canon_args, execute
 
 # The 20 tools: 19 from SPEC.md 3.1-3.19 (same JSON, no rewording) + the
@@ -803,7 +803,7 @@ TOOLS = [
     },
     {
         "name": "vambrace",
-        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. register_autoexport, deregister_autoexport, and export are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and export. export is one-shot: it exports a live intention/chain/blade stack to emit_path immediately, read-only against the vambrace (no register row, no log, no stored signature). Armory-level actions mint no db log rows. See SPEC 3.18.",
+        "description": "Armory control. action=equip mints a UUIDv7, instantiates an empty Qatena database file named <UUIDv7>.db in the armory dir, bootstraps its schema, and returns exactly {\"vambrace\": \"<UUIDv7>\"} — the vambrace's key, required on every other verb's call; it takes an optional 'saga' (the human-facing name), conflict-checked case-insensitively against the known sags before anything is minted. inventory is key-less with no parameters: both populations (live and waylaid) with saga, size, mtime, and the waylay dismantle counts. saga is key-bearing (live or waylaid keys; an unknown key is not_found): 'label' is presence-masked — omitted = no-change, \"\" = clear, a name = set. register_autoexport, deregister_autoexport, and furnish are key-bearing vambrace actions: alongside 'action' they take the vambrace's key as the 'vambrace' argument (validated fail-closed exactly like every routed verb — missing_vambrace / malformed_vambrace / unknown_vambrace), plus 'root' and 'emit_path', and 'emit_format' for register and furnish. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately; root = the literal 'mythos' snapshots the whole vambrace (all eight spaces + meta). Both are read-only against the vambrace (no register row, no log, no stored signature). Armory-level actions mint no db log rows. See SPEC 3.18.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -815,24 +815,23 @@ TOOLS = [
                         "saga",
                         "register_autoexport",
                         "deregister_autoexport",
-                        "export"
+                        "furnish"
                     ],
-                    "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. register_autoexport / deregister_autoexport / export: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and export additionally require 'emit_format'. export is one-shot: immediate export of a live intention/chain/blade stack to emit_path, read-only against the vambrace (no register row, no log, no signature); reblade_fidelity selects the reblade layer for this render (default out). Armory-level actions mint no db log rows."
+                    "description": "equip: key-less — mints a new vambrace (optional 'saga'). inventory: key-less, no other parameters — lists both populations (live and waylaid). saga: key-bearing (live or waylaid key; unknown key -> not_found) — 'label' presence-masked: omitted = no-change, \"\" = clear, a name = set. register_autoexport / deregister_autoexport / furnish: key-bearing — also pass 'vambrace' (the vambrace's key), 'root', and 'emit_path'; register_autoexport and furnish additionally require 'emit_format'. furnish is one-shot: root = a live intention/chain/blade uuid exports that stack to emit_path immediately, read-only against the vambrace (no register row, no log, no signature; reblade_fidelity selects the reblade layer for this render, default out); root = the literal 'mythos' snapshots the whole vambrace (reblade_fidelity is rejected if supplied). Armory-level actions mint no db log rows."
                 },
                 "vambrace": {
                     "type": "string",
                     "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For the key-bearing actions (register_autoexport / deregister_autoexport / export / saga): the vambrace's key (returned by action=equip; saga also accepts waylaid keys). Not used by equip or inventory."
+                    "description": "For the key-bearing actions (register_autoexport / deregister_autoexport / furnish / saga): the vambrace's key (returned by action=equip; saga also accepts waylaid keys). Not used by equip or inventory."
                 },
                 "root": {
                     "type": "string",
-                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-                    "description": "For register_autoexport / deregister_autoexport / export: the stack root — a LIVE intention, chain, or blade (register / export); the registered root (deregister). Not used by equip."
+                    "description": "The stack root. furnish: the UUID of a live intention/chain/blade, or the literal 'mythos' (the whole-vambrace snapshot). register_autoexport: a LIVE intention, chain, or blade (the literal 'mythos' is rejected). deregister_autoexport: the registered root. Not used by equip, inventory, or saga."
                 },
                 "emit_path": {
                     "type": "string",
                     "minLength": 1,
-                    "description": "For register_autoexport / deregister_autoexport / export: destination file path, used exactly as given; the parent directory must exist. Not used by equip."
+                    "description": "For register_autoexport / deregister_autoexport / furnish: destination file path, used exactly as given; the parent directory must exist. Not used by equip."
                 },
                 "emit_format": {
                     "type": "string",
@@ -842,7 +841,7 @@ TOOLS = [
                         "json",
                         "ndjson"
                     ],
-                    "description": "For register_autoexport and export only: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister."
+                    "description": "For register_autoexport and furnish only: export format. register: re-registering the same root+path with a different format replaces it. Not used by equip or deregister."
                 },
                 "reblade_fidelity": {
                     "type": "string",
@@ -852,7 +851,7 @@ TOOLS = [
                         "out",
                         "both"
                     ],
-                    "description": "For register_autoexport and export only: reblade layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. export: the mode for this one-off render; omitted = 'out'. Not used by equip or deregister."
+                    "description": "For register_autoexport and furnish only: reblade layer (none|in|out|both). register: 'out' at creation, presence-masked on re-register, signed into the stack signature. furnish: the mode for this one-off stack render; omitted = 'out'; rejected if supplied with the mythos root. Not used by equip or deregister."
                 },
                 "label": {
                     "type": "string",
@@ -909,6 +908,10 @@ _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 # Routing key format (SPEC 1.9): UUIDv7 — 36-char lowercase hyphenated, version nibble 7.
 _VAMBRACE_KEY_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
+# Any well-formed UUID (any version, any case): the furnish root gate -- a
+# root may be any tracked entity's uuid, not just a UUIDv7 routing key.
+_ANY_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
 
 def _send(payload):
     """One MCP message per line on stdout, flushed immediately."""
@@ -935,10 +938,11 @@ def _call_vambrace(armory_dir, arguments):
     ``inventory`` (list both populations). KEY-BEARING, validated fail-closed
     exactly like a routed verb: ``saga`` (works on live AND waylaid keys; an
     unknown key is not_found), ``register_autoexport``,
-    ``deregister_autoexport``, and ``export`` (one-shot stack render,
-    read-only against the vambrace -- no register row, no log row, no stored
-    signature). Armory-level actions mint no db log rows; the ledger and the
-    responses are their record (draft, ratified 10.8).
+    ``deregister_autoexport``, and ``furnish`` (the renamed one-shot export:
+    root = a live uuid renders that stack, root = 'mythos' snapshots the
+    whole vambrace; read-only against the vambrace -- no register row, no log
+    row, no stored signature). Armory-level actions mint no db log rows; the
+    ledger and the responses are their record (draft, ratified 10.8).
     """
     action = arguments.get("action")
     if action == "equip":
@@ -951,13 +955,13 @@ def _call_vambrace(armory_dir, arguments):
         return _call_register_autoexport(armory_dir, arguments)
     if action == "deregister_autoexport":
         return _call_deregister_autoexport(armory_dir, arguments)
-    if action == "export":
-        return _call_export(armory_dir, arguments)
+    if action == "furnish":
+        return _call_furnish(armory_dir, arguments)
     return _tool_error(
         "unsupported_action",
         f"unsupported vambrace action {action!r} — v1 supports: equip, "
         "inventory, saga, register_autoexport, deregister_autoexport, "
-        "export"), True
+        "furnish"), True
 
 
 def _call_equip(armory_dir, arguments):
@@ -1209,6 +1213,11 @@ def _call_register_autoexport(armory_dir, arguments):
         return _tool_error("validation_failed",
                            "root is required for register_autoexport: the uuid of a live "
                            "intention, chain, or blade"), True
+    if root == "mythos":
+        return _tool_error("validation_failed",
+                           "register_autoexport root 'mythos' is not supported: register "
+                           "roots must resolve to a live intention/chain/blade "
+                           "(whole-vambrace autoexport is a future extension)"), True
     emit_path = arguments.get("emit_path")
     if not isinstance(emit_path, str) or not emit_path:
         return _tool_error("validation_failed",
@@ -1308,27 +1317,61 @@ def _call_deregister_autoexport(armory_dir, arguments):
         conn.close()
 
 
-def _call_export(armory_dir, arguments):
-    """export (SPEC 3.18): key-bearing ONE-SHOT.
+def _furnish_mythos(path, arguments):
+    """furnish root='mythos' (draft 5.5/6): the whole-vambrace snapshot.
 
-    Mirrors the register_autoexport validation chain, then renders and
-    writes the stack file immediately. Deliberately read-only against the
-    vambrace: no register row, no log row, no log_refs, no stored signature --
-    and so no schema.bootstrap on this path (the key check above already
-    guarantees the vambrace file exists).
+    Zero mutation: snapshot.write_mythos opens the vambrace READ-ONLY and
+    never writes it -- no register row, no log row, no stored signature.
+    reblade_fidelity is inapplicable (the whole db is the scope; no reblade
+    layers) and is rejected if supplied. emit_path/emit_format are
+    pre-validated by _call_furnish before the root dispatch."""
+    if arguments.get("reblade_fidelity") is not None:
+        return _tool_error("validation_failed",
+                           "reblade_fidelity is inapplicable to a mythos furnish: "
+                           "the whole vambrace is the scope (no reblade layers)"), True
+    emit_path = arguments.get("emit_path")
+    emit_format = arguments.get("emit_format")
+    key = os.path.basename(path)[: -len(".db")]
+    try:
+        bytes_written = snapshot.write_mythos(path, key, emit_path, emit_format)
+    except sqlite3.Error as e:
+        return _tool_error("db_error", str(e)), True
+    except Exception as e:
+        return _tool_error("export_failed",
+                           f"furnish write failed: {type(e).__name__}: {e}"), True
+    return {
+        "root": "mythos",
+        "emit_path": emit_path,
+        "emit_format": emit_format,
+        "bytes": bytes_written,
+        "exported": True,
+    }, False
+
+
+def _call_furnish(armory_dir, arguments):
+    """furnish (SPEC 3.18): key-bearing ONE-SHOT (the renamed ``export``).
+
+    ``root`` selects the scope:
+      * a live entity uuid -- the stack export, byte-identical to the old
+        one-shot export (mirrors the register_autoexport validation chain,
+        then renders and writes the stack file immediately);
+      * the literal "mythos" -- the whole-vambrace snapshot
+        (qatena.snapshot.write_mythos: all eight spaces + the meta);
+      * anything else -- malformed, rejected immediately (a malformed root
+        must never silently degrade into a wider scope).
+
+    Deliberately read-only against the vambrace in both modes: no register
+    row, no log row, no log_refs, no stored signature -- and so no
+    schema.bootstrap on this path (the key check above already guarantees
+    the vambrace file exists).
     """
     path, err = _validate_routing_key(arguments.get("vambrace"), armory_dir)
     if err is not None:
         return err
-    root = arguments.get("root")
-    if not isinstance(root, str) or not root:
-        return _tool_error("validation_failed",
-                           "root is required for export: the uuid of a live "
-                           "intention, chain, or blade"), True
     emit_path = arguments.get("emit_path")
     if not isinstance(emit_path, str) or not emit_path:
         return _tool_error("validation_failed",
-                           "emit_path is required for export: a non-empty "
+                           "emit_path is required for furnish: a non-empty "
                            "destination file path"), True
     parent = os.path.dirname(emit_path)
     if parent and not os.path.isdir(parent):
@@ -1339,6 +1382,17 @@ def _call_export(armory_dir, arguments):
         return _tool_error("validation_failed",
                            f"emit_format must be one of {list(autoexport.ALLOWED_FORMATS)}: "
                            f"got {emit_format!r}"), True
+    root = arguments.get("root")
+    if not isinstance(root, str) or not root:
+        return _tool_error("validation_failed",
+                           "root is required for furnish: the uuid of a live "
+                           "intention, chain, or blade, or the literal 'mythos'"), True
+    if root == "mythos":
+        return _furnish_mythos(path, arguments)
+    if not _ANY_UUID_RE.match(root):
+        return _tool_error("malformed",
+                           f"root {root!r} is malformed: furnish takes the uuid of a "
+                           "live intention/chain/blade or the literal 'mythos'"), True
     reblade_fidelity = arguments.get("reblade_fidelity")
     if reblade_fidelity is not None and reblade_fidelity not in autoexport.REBLADE_FIDELITIES:
         return _tool_error("validation_failed",

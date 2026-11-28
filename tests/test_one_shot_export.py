@@ -1,6 +1,6 @@
-"""One-shot export action (SPEC 3.18) -- the vambrace ``export`` action.
+"""One-shot furnish action (SPEC 3.18) -- the vambrace ``furnish`` action (the renamed export).
 
-Unlike register_autoexport, export performs NO database mutations: no
+Unlike register_autoexport, furnish performs NO database mutations: no
 register row, no log row, no log_refs, no stored signature. The real
 server handlers drive a real vambrace file (same in-process pattern as
 test_autoexport.py); QATENA_EXPORT_SYNC=1 is set so the sig-gated
@@ -41,7 +41,7 @@ class OneShotExportTests(QatenaTestCase):
 
     def _export(self, root, emit_path, emit_format="json",
                 reblade_fidelity=None):
-        args = {"action": "export", "root": root,
+        args = {"action": "furnish", "root": root,
                 "emit_path": emit_path, "emit_format": emit_format}
         if reblade_fidelity is not None:
             args["reblade_fidelity"] = reblade_fidelity
@@ -218,13 +218,13 @@ class OneShotExportTests(QatenaTestCase):
             self.assertEqual(self._code(p), "validation_failed")
         with self.subTest("missing root"):
             p, e = server._call_vambrace(self._tmp, {
-                "action": "export", "vambrace": self._key,
+                "action": "furnish", "vambrace": self._key,
                 "emit_path": out, "emit_format": "json"})
             self.assertTrue(e)
             self.assertEqual(self._code(p), "validation_failed")
         with self.subTest("missing emit_path"):
             p, e = server._call_vambrace(self._tmp, {
-                "action": "export", "vambrace": self._key, "root": cid})
+                "action": "furnish", "vambrace": self._key, "root": cid})
             self.assertTrue(e)
             self.assertEqual(self._code(p), "validation_failed")
         with self.subTest("parent directory missing"):
@@ -233,7 +233,7 @@ class OneShotExportTests(QatenaTestCase):
             self.assertEqual(self._code(p), "validation_failed")
         with self.subTest("missing routing key"):
             p, e = server._call_vambrace(self._tmp, {
-                "action": "export", "root": cid,
+                "action": "furnish", "root": cid,
                 "emit_path": out, "emit_format": "json"})
             self.assertTrue(e)
             self.assertEqual(self._code(p), "missing_vambrace")
